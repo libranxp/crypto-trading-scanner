@@ -1,29 +1,30 @@
 name: Crypto Scanner Scheduler
 
 on:
-  # Schedule: Every 45 minutes between 7:00 and 20:59 UTC
   schedule:
-    - cron: "*/45 7-20 * * *"
-  # Allow manual trigger
+    - cron: "*/45 7-20 * * *"  # Every 45 minutes between 7:00 and 20:59 UTC
   workflow_dispatch:
 
 jobs:
-  tier1_and_tier2:
-    name: Tier 1 and Tier 2 Scan
+  tier1_and_tier2_scan:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Trigger Tier 1 Auto Scan and Save Symbols
+      - name: Trigger Tier 1 Auto Scan and Extract Symbols
         id: tier1
         run: |
-          # Call the Tier 1 scan endpoint and save the response
+          echo "Calling Tier 1 /scan/auto endpoint..."
           response=$(curl -s -X GET https://crypto-trading-scanner.onrender.com/scan/auto)
+          echo "Response: $response"
           echo "$response" > response.json
-          # Extract symbols from the live scan results (expects .results[].symbol)
-          symbols=$(cat response.json | jq -r '.results[].symbol' | tr '\n' ',' | sed 's/,$//')
+          # Extract symbols as comma-separated list
+          symbols=$(jq -r '.results[].symbol' response.json | tr '\n' ',' | sed 's/,$//')
+          echo "Extracted symbols: $symbols"
           echo "SYMBOLS=$symbols" >> $GITHUB_ENV
 
-      - name: Trigger Tier 2 Scan for Live Symbols
+      - name: Trigger Tier 2 Manual Scan with Symbols
         if: env.SYMBOLS != ''
         run: |
-          # Only trigger if there are symbols found by Tier 1 scan
-          curl -X GET "https://crypto-trading-scanner.onrender.com/scan/manual?symbols=${{ env.SYMBOLS }}"
+          echo "Calling Tier 2 /scan/manual with symbols: $SYMBOLS"
+          tier2_response=$(curl -s -X GET "https://crypto-trading-scanner.onrender.com/scan/manual?symbols=$SYMBOLS")
+          echo "Tier 2 response: $tier2_response"
