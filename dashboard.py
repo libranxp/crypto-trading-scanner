@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 
 # Replace with your deployed backend URL (crypto-trading-scanner service)
-API_BASE_URL = "https://YOUR-BACKEND-URL.onrender.com"
+API_BASE_URL = "https://crypto-trading-scanner.onrender.com"
 
 st.set_page_config(page_title="Crypto Scanner Dashboard", layout="wide")
 st.title("🪙 Crypto Scanner Dashboard")
