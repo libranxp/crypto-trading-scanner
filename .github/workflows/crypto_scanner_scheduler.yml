@@ -1,0 +1,31 @@
+name: Crypto Scanner Scheduler
+
+on:
+  # Schedule Tier 1 Auto Scan every 45 minutes between 7:00 and 20:59 UTC
+  schedule:
+    - cron: "*/45 7-20 * * *"
+
+  # Allow manual triggering of the workflow
+  workflow_dispatch:
+
+jobs:
+  tier1_auto_scan:
+    name: Tier 1 Auto Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Tier 1 Auto Scan
+        run: |
+          curl -X GET https://crypto-trading-scanner.onrender.com/scan/auto
+
+  tier2_manual_scan:
+    name: Tier 2 Manual Scan
+    runs-on: ubuntu-latest
+
+    # Tier 2 scan runs daily at 10:00 UTC
+    if: github.event.schedule == '0 10 * * *'
+
+    steps:
+      - name: Trigger Tier 2 Manual Scan
+        run: |
+          curl -X GET "https://crypto-trading-scanner.onrender.com/scan/manual?symbols=BTC,ETH"
