@@ -1,69 +1,56 @@
 import streamlit as st
-import requests
 import pandas as pd
+import requests
 
-# URL of your deployed FastAPI backend
-API_BASE_URL = "https://crypto-trading-scanner.onrender.com"
+# Replace with your deployed backend URL (crypto-trading-scanner service)
+API_BASE_URL = "https://YOUR-BACKEND-URL.onrender.com"
 
-st.set_page_config(page_title="Crypto Trading Scanner Dashboard", layout="wide")
+st.set_page_config(page_title="Crypto Scanner Dashboard", layout="wide")
+st.title("🪙 Crypto Scanner Dashboard")
 
-st.title("🚀 Crypto Trading Scanner Live Dashboard")
-
-# Fetch Tier 1 data
-@st.cache(ttl=300)
-def fetch_tier1_data():
+@st.cache_data(ttl=300)
+def fetch_data():
     try:
-        resp = requests.get(f"{API_BASE_URL}/scan/auto")
+        resp = requests.get(f"{API_BASE_URL}/scan/auto", timeout=120)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
-        st.error(f"Failed to fetch Tier 1 data: {e}")
-        return None
+        st.error(f"Failed to fetch data: {e}")
+        return {"results": []}
 
-# Fetch Tier 2 data for selected symbols
-def fetch_tier2_data(symbols):
-    try:
-        params = {"symbols": ",".join(symbols)}
-        resp = requests.get(f"{API_BASE_URL}/scan/manual", params=params)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        st.error(f"Failed to fetch Tier 2 data: {e}")
-        return None
+data = fetch_data()
+results = data.get("results", [])
 
-tier1_data = fetch_tier1_data()
+if results:
+    df = pd.DataFrame(results)
+    # Optional: Format columns for readability
+    if "price" in df.columns:
+        df["price"] = df["price"].map(lambda x: f"${x:,.4f}")
+    if "market_cap" in df.columns:
+        df["market_cap"] = df["market_cap"].map(lambda x: f"${x:,.0f}")
+    if "volume" in df.columns:
+        df["volume"] = df["volume"].map(lambda x: f"${x:,.0f}")
+    if "price_change_24h" in df.columns:
+        df["price_change_24h"] = df["price_change_24h"].map(lambda x: f"{x:.2f}%")
+    if "sentiment_score" in df.columns:
+        df["sentiment_score"] = df["sentiment_score"].map(lambda x: f"{x:.2f}")
 
-if tier1_data and "results" in tier1_data:
-    df = pd.DataFrame(tier1_data["results"])
+    # Show a summary
+    st.success(f"Found {len(df)} coins matching all scanner criteria.")
 
-    # Show basic market data table
-    st.subheader("Tier 1: Market Data")
-    st.dataframe(df[["symbol", "name", "price", "market_cap", "volume", "lunarcrush_sentiment"]])
+    # Show the table
+    st.dataframe(df, use_container_width=True)
 
-    # Show news if available
-    if "news" in tier1_data and tier1_data["news"]:
-        st.subheader("Trending Crypto News")
-        for article in tier1_data["news"]:
-            st.markdown(f"- [{article['title']}]({article['url']})")
+    # Optionally, allow user to click for more info
+    st.markdown("### Coin Details")
+    selected = st.selectbox("Select a coin for more details", df["symbol"])
+    coin_row = df[df["symbol"] == selected].iloc[0]
+    st.json(coin_row.to_dict())
 
-    # Select symbols for Tier 2 scan
-    st.subheader("Tier 2: Manual Scan & Alerts")
-    symbols = st.multiselect("Select symbols to scan (Tier 2)", options=df["symbol"].tolist())
-
-    if st.button("Run Tier 2 Scan"):
-        if symbols:
-            tier2_data = fetch_tier2_data(symbols)
-            if tier2_data and "results" in tier2_data:
-                tier2_df = pd.DataFrame(tier2_data["results"])
-                if not tier2_df.empty:
-                    st.success(f"Found {len(tier2_df)} coins matching Tier 2 criteria")
-                    st.dataframe(tier2_df)
-                else:
-                    st.info("No coins matched Tier 2 criteria.")
-            else:
-                st.error("Failed to get Tier 2 scan results.")
-        else:
-            st.warning("Please select at least one symbol.")
-
+    # Optionally, show links
+    if "coinmarketcap_url" in coin_row:
+        st.markdown(f"[View on CoinMarketCap]({coin_row['coinmarketcap_url']})")
 else:
-    st.error("No Tier 1 data available.")
+    st.warning("No coins currently match all scanner criteria.")
+
+st.caption("Data updates every 5 minutes. Powered by your multi-API crypto scanner.")
