@@ -2,13 +2,11 @@ import streamlit as st
 import pandas as pd
 import requests
 
-# Replace with your deployed backend URL (crypto-trading-scanner service)
 API_BASE_URL = "https://crypto-trading-scanner.onrender.com"
 
 st.set_page_config(page_title="Crypto Scanner Dashboard", layout="wide")
 st.title("🪙 Crypto Scanner Dashboard")
 
-@st.cache_data(ttl=300)
 def fetch_data():
     try:
         resp = requests.get(f"{API_BASE_URL}/scan/auto", timeout=120)
@@ -18,12 +16,14 @@ def fetch_data():
         st.error(f"Failed to fetch data: {e}")
         return {"results": []}
 
-data = fetch_data()
+if st.button("Refresh Data"):
+    st.cache_data.clear()
+
+data = st.cache_data(ttl=300)(fetch_data)()
 results = data.get("results", [])
 
 if results:
     df = pd.DataFrame(results)
-    # Optional: Format columns for readability
     if "price" in df.columns:
         df["price"] = df["price"].map(lambda x: f"${x:,.4f}")
     if "market_cap" in df.columns:
@@ -35,22 +35,16 @@ if results:
     if "sentiment_score" in df.columns:
         df["sentiment_score"] = df["sentiment_score"].map(lambda x: f"{x:.2f}")
 
-    # Show a summary
     st.success(f"Found {len(df)} coins matching all scanner criteria.")
-
-    # Show the table
     st.dataframe(df, use_container_width=True)
 
-    # Optionally, allow user to click for more info
     st.markdown("### Coin Details")
     selected = st.selectbox("Select a coin for more details", df["symbol"])
     coin_row = df[df["symbol"] == selected].iloc[0]
     st.json(coin_row.to_dict())
-
-    # Optionally, show links
     if "coinmarketcap_url" in coin_row:
         st.markdown(f"[View on CoinMarketCap]({coin_row['coinmarketcap_url']})")
 else:
-    st.warning("No coins currently match all scanner criteria.")
+    st.warning("No coins currently match all scanner criteria. Try loosening filters or check backend logs for details.")
 
 st.caption("Data updates every 5 minutes. Powered by your multi-API crypto scanner.")
