@@ -20,7 +20,6 @@ try:
             st.write(f"24h Change: {coin['price_change_24h']}%")
             st.write(f"RSI: {coin['rsi']:.2f}")
             st.write(f"RVOL: {coin['rvol']:.2f}")
-            st.write(f"Sentiment: {coin['sentiment_score']:.2f}")
             st.write(f"[View on CoinGecko]({coin['coingecko_url']})")
             st.markdown("---")
 except Exception as e:
