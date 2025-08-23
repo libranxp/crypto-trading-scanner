@@ -1,17 +1,7 @@
-def run_tier2_scan(candidates):
-    """
-    Tier 2: Advanced filters
-    - EMA alignment
-    - VWAP proximity
-    - Pump filter
-    - Sentiment filter
-    - Duplicate filter
-    """
-    filtered = []
+from supabase import create_client
+from config import SUPABASE_URL, SUPABASE_KEY
 
-    for coin in candidates:
-        # TODO: implement each filter
-        # Example: check EMA5 > EMA13 > EMA50
-        pass
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    return filtered
+def save_alert_to_db(alert):
+    supabase.table("alerts").insert(alert).execute()
