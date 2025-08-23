@@ -39,7 +39,7 @@ def retry_get(url, params=None, headers=None, max_retries=3, backoff=2):
 @lru_cache(maxsize=1)
 def fetch_coingecko_coins_cached() -> List[Dict]:
     coins = []
-    pages_to_fetch = 2  # reduce pages to limit calls
+    pages_to_fetch = 2  # 500 coins, adjust as needed for rate limits
     for page in range(1, pages_to_fetch + 1):
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
@@ -145,6 +145,13 @@ def fetch_santiment_sentiment(symbol: str) -> float:
         print(f"Santiment API exception for {symbol}: {e}")
         return 0
 
+def is_meme_coin(coin: Dict) -> bool:
+    # Simple meme coin check: name or symbol contains "doge", "shib", "inu", "pepe", "meme", "floki", etc.
+    meme_keywords = ["doge", "shib", "inu", "pepe", "meme", "floki", "babydoge", "elon", "jeet", "rekt", "wojak"]
+    name = coin["name"].lower()
+    symbol = coin["symbol"].lower()
+    return any(word in name or word in symbol for word in meme_keywords)
+
 def calculate_indicators(coin: Dict) -> Dict:
     prices = coin.get("sparkline_in_7d", {}).get("price", [])
     if not prices or len(prices) < 50:
@@ -172,7 +179,7 @@ def calculate_indicators(coin: Dict) -> Dict:
     rvol = coin.get("total_volume", 0) / avg_vol if avg_vol else 0
     if len(prices) > 12:
         last_hour = prices[-12:]
-        pump_filter = (max(last_hour) - min(last_hour)) / min(last_hour) > 0.5
+        pump_filter = (max(last_hour) - min(last_hour)) / min(last_hour) > 0.5 and coin.get("total_volume", 0) < 20_000_000
     else:
         pump_filter = False
     return {
@@ -190,16 +197,17 @@ def passes_filters(coin: Dict, indicators: Dict, social: Dict, sentiment: float,
     price_change = coin.get("price_change_percentage_24h", 0)
     symbol = coin["symbol"].upper()
 
-    if not (0.001 <= price <= 100):
+    # --- Balanced & Relaxed Criteria ---
+    if not (0.005 <= price <= 50):
         print(f"{symbol} failed price filter")
         return False
-    if volume < 10_000_000:
+    if volume < 15_000_000:
         print(f"{symbol} failed volume filter")
         return False
-    if not (2 <= price_change <= 20):
+    if not (2 <= price_change <= 15):
         print(f"{symbol} failed price change filter")
         return False
-    if not (10_000_000 <= market_cap <= 5_000_000_000):
+    if not (20_000_000 <= market_cap <= 2_000_000_000):
         print(f"{symbol} failed market cap filter")
         return False
     if not (50 <= indicators.get("rsi", 0) <= 70):
@@ -220,21 +228,22 @@ def passes_filters(coin: Dict, indicators: Dict, social: Dict, sentiment: float,
     if ALERT_HISTORY.get(symbol, 0) > time.time() - 6*3600:
         print(f"{symbol} failed duplicate alert filter")
         return False
-    if social.get("twitter_mentions", 0) + twitter_mentions < 10:
-        print(f"{symbol} failed twitter mentions filter")
+    # Social / Sentiment
+    total_mentions = social.get("twitter_mentions", 0) + twitter_mentions + reddit_mentions + news_mentions
+    if total_mentions < 10:
+        print(f"{symbol} failed mentions filter")
         return False
     if social.get("engagement_score", 0) < 100:
         print(f"{symbol} failed engagement score filter")
         return False
-    if not social.get("influencer_flag", False):
-        print(f"{symbol} failed influencer flag filter")
-        return False
     if sentiment < 0.6:
         print(f"{symbol} failed sentiment filter")
         return False
-    if news_mentions + reddit_mentions < 10:
-        print(f"{symbol} failed news/reddit mentions filter")
-        return False
+    # Meme coin logic
+    if is_meme_coin(coin):
+        if not (volume > 15_000_000 and sentiment >= 0.6):
+            print(f"{symbol} failed meme coin volume/sentiment filter")
+            return False
     return True
 
 def send_telegram_alert(coin: Dict):
