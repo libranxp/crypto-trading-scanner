@@ -7,38 +7,42 @@ from typing import List, Dict
 app = FastAPI()
 
 # --- ENVIRONMENT VARIABLES ---
-ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY")
-COINMARKETCAL_API_KEY = os.getenv("COINMARKETCAL_API_KEY")
-COINMARKETCAP_API_KEY = os.getenv("COINMARKETCAP_API_KEY")
-CRYPTODESK_API_KEY = os.getenv("CRYPTODESK_API_KEY")
-CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY")
 LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY")
-MESSARI_API_KEY = os.getenv("MESSARI_API_KEY")
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET")
 SANTIMENT_API_KEY = os.getenv("SANTIMENT_API_KEY")
-TAPPI_API_KEY = os.getenv("TAPPI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 
 ALERT_HISTORY = {}  # symbol: last_alert_timestamp
 
-def fetch_coinmarketcap_coins() -> List[Dict]:
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-    headers = {"X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY}
-    params = {"start": 1, "limit": 100, "convert": "USD"}  # Lowered for faster debug
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        if resp.status_code != 200:
-            print(f"CMC API error: {resp.status_code} {resp.text}")
-            return []
-        return resp.json().get("data", [])
-    except Exception as e:
-        print(f"CMC API exception: {e}")
-        return []
+# --- API FETCH FUNCTIONS ---
+
+def fetch_coingecko_coins() -> List[Dict]:
+    coins = []
+    for page in range(1, 5):  # Up to 1000 coins (250 per page)
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": 250,
+            "page": page,
+            "sparkline": True
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=30)
+            if resp.status_code != 200:
+                print(f"CoinGecko error: {resp.status_code} {resp.text}")
+                break
+            data = resp.json()
+            if not data:
+                break
+            coins.extend(data)
+        except Exception as e:
+            print(f"CoinGecko exception: {e}")
+            break
+    print(f"Fetched {len(coins)} coins from CoinGecko.")
+    return coins
 
 def fetch_lunarcrush_social(symbol: str) -> Dict:
     try:
@@ -126,8 +130,10 @@ def fetch_santiment_sentiment(symbol: str) -> float:
         print(f"Santiment API exception for {symbol}: {e}")
         return 0
 
+# --- INDICATOR CALCULATIONS ---
+
 def calculate_indicators(coin: Dict) -> Dict:
-    prices = coin.get("quote", {}).get("USD", {}).get("sparkline", [])
+    prices = coin.get("sparkline_in_7d", {}).get("price", [])
     if not prices or len(prices) < 50:
         return {}
     deltas = [prices[i+1] - prices[i] for i in range(len(prices)-1)]
@@ -148,9 +154,9 @@ def calculate_indicators(coin: Dict) -> Dict:
     ema50 = ema(prices, 50)
     ema_alignment = ema5 > ema13 > ema50
     vwap = sum(prices[-20:]) / len(prices[-20:])
-    vwap_proximity = abs(coin["quote"]["USD"]["price"] - vwap) / vwap <= 0.02
-    avg_vol = coin["quote"]["USD"]["volume_24h"] / 7 if coin["quote"]["USD"]["volume_24h"] else 0.0001
-    rvol = coin["quote"]["USD"]["volume_24h"] / avg_vol if avg_vol else 0
+    vwap_proximity = abs(coin["current_price"] - vwap) / vwap <= 0.02
+    avg_vol = coin.get("total_volume", 0) / 7 if coin.get("total_volume") else 0.0001
+    rvol = coin.get("total_volume", 0) / avg_vol if avg_vol else 0
     if len(prices) > 12:
         last_hour = prices[-12:]
         pump_filter = (max(last_hour) - min(last_hour)) / min(last_hour) > 0.5
@@ -164,61 +170,72 @@ def calculate_indicators(coin: Dict) -> Dict:
         "pump_filter": pump_filter
     }
 
+# --- FILTERS WITH DEBUG LOGGING ---
+
 def passes_filters(coin: Dict, indicators: Dict, social: Dict, sentiment: float, news_mentions: int, twitter_mentions: int, reddit_mentions: int) -> bool:
-    price = coin["quote"]["USD"]["price"]
-    volume = coin["quote"]["USD"]["volume_24h"]
-    market_cap = coin["quote"]["USD"]["market_cap"]
-    price_change = coin["quote"]["USD"].get("percent_change_24h", 0)
-    symbol = coin["symbol"]
+    price = coin["current_price"]
+    volume = coin["total_volume"]
+    market_cap = coin.get("market_cap", 0)
+    price_change = coin.get("price_change_percentage_24h", 0)
+    symbol = coin["symbol"].upper()
 
-    # --- Loosen filters for debugging if needed ---
-    # if not (0.001 <= price <= 100): return False
-    # if volume < 10_000_000: return False
-    # if not (2 <= price_change <= 20): return False
-    # if not (10_000_000 <= market_cap <= 5_000_000_000): return False
-    # if not (50 <= indicators.get("rsi", 0) <= 70): return False
-    # if indicators.get("rvol", 0) < 2: return False
-    # if not indicators.get("ema_alignment", False): return False
-    # if not indicators.get("vwap_proximity", False): return False
-    # if indicators.get("pump_filter", False): return False
-    # if ALERT_HISTORY.get(symbol, 0) > time.time() - 6*3600: return False
-    # if social.get("twitter_mentions", 0) + twitter_mentions < 10: return False
-    # if social.get("engagement_score", 0) < 100: return False
-    # if not social.get("influencer_flag", False): return False
-    # if sentiment < 0.6: return False
-    # if news_mentions + reddit_mentions < 10: return False
-
-    # For debugging, comment out some filters above to see results.
-    # Uncomment the strict filters above for production.
-
-    # --- Strict filters (uncomment for production) ---
-    if not (0.001 <= price <= 100): return False
-    if volume < 10_000_000: return False
-    if not (2 <= price_change <= 20): return False
-    if not (10_000_000 <= market_cap <= 5_000_000_000): return False
-    if not (50 <= indicators.get("rsi", 0) <= 70): return False
-    if indicators.get("rvol", 0) < 2: return False
-    if not indicators.get("ema_alignment", False): return False
-    if not indicators.get("vwap_proximity", False): return False
-    if indicators.get("pump_filter", False): return False
-    if ALERT_HISTORY.get(symbol, 0) > time.time() - 6*3600: return False
-    if social.get("twitter_mentions", 0) + twitter_mentions < 10: return False
-    if social.get("engagement_score", 0) < 100: return False
-    if not social.get("influencer_flag", False): return False
-    if sentiment < 0.6: return False
-    if news_mentions + reddit_mentions < 10: return False
+    if not (0.001 <= price <= 100):
+        print(f"{symbol} failed price filter")
+        return False
+    if volume < 10_000_000:
+        print(f"{symbol} failed volume filter")
+        return False
+    if not (2 <= price_change <= 20):
+        print(f"{symbol} failed price change filter")
+        return False
+    if not (10_000_000 <= market_cap <= 5_000_000_000):
+        print(f"{symbol} failed market cap filter")
+        return False
+    if not (50 <= indicators.get("rsi", 0) <= 70):
+        print(f"{symbol} failed RSI filter")
+        return False
+    if indicators.get("rvol", 0) < 2:
+        print(f"{symbol} failed RVOL filter")
+        return False
+    if not indicators.get("ema_alignment", False):
+        print(f"{symbol} failed EMA alignment filter")
+        return False
+    if not indicators.get("vwap_proximity", False):
+        print(f"{symbol} failed VWAP proximity filter")
+        return False
+    if indicators.get("pump_filter", False):
+        print(f"{symbol} failed pump filter")
+        return False
+    if ALERT_HISTORY.get(symbol, 0) > time.time() - 6*3600:
+        print(f"{symbol} failed duplicate alert filter")
+        return False
+    if social.get("twitter_mentions", 0) + twitter_mentions < 10:
+        print(f"{symbol} failed twitter mentions filter")
+        return False
+    if social.get("engagement_score", 0) < 100:
+        print(f"{symbol} failed engagement score filter")
+        return False
+    if not social.get("influencer_flag", False):
+        print(f"{symbol} failed influencer flag filter")
+        return False
+    if sentiment < 0.6:
+        print(f"{symbol} failed sentiment filter")
+        return False
+    if news_mentions + reddit_mentions < 10:
+        print(f"{symbol} failed news/reddit mentions filter")
+        return False
     return True
 
 def send_telegram_alert(coin: Dict):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     msg = (
-        f"🚨 *{coin['name']}* ({coin['symbol']})\n"
-        f"Price: ${coin['quote']['USD']['price']:.4f}\n"
-        f"Volume: ${coin['quote']['USD']['volume_24h']:,}\n"
-        f"Market Cap: ${coin['quote']['USD']['market_cap']:,}\n"
-        f"24h Change: {coin['quote']['USD'].get('percent_change_24h', 0):.2f}%\n"
-        f"https://coinmarketcap.com/currencies/{coin['slug']}/"
+        f"🚨 *{coin['name']}* ({coin['symbol'].upper()})\n"
+        f"Price: ${coin['current_price']:.4f}\n"
+        f"Volume: ${coin['total_volume']:,}\n"
+        f"Market Cap: ${coin.get('market_cap', 0):,}\n"
+        f"24h Change: {coin.get('price_change_percentage_24h', 0):.2f}%\n"
+        f"https://www.coingecko.com/en/coins/{coin['id']}"
     )
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -233,14 +250,15 @@ def send_telegram_alert(coin: Dict):
 
 @app.get("/scan/auto")
 def scan_auto():
-    coins = fetch_coinmarketcap_coins()
-    print(f"Fetched {len(coins)} coins from CoinMarketCap.")
+    coins = fetch_coingecko_coins()
+    print(f"Fetched {len(coins)} coins from CoinGecko.")
     results = []
     filtered = 0
     for coin in coins:
-        symbol = coin["symbol"]
+        symbol = coin["symbol"].upper()
         indicators = calculate_indicators(coin)
         if not indicators:
+            print(f"{symbol} skipped: insufficient sparkline data")
             continue
         social = fetch_lunarcrush_social(symbol)
         sentiment = fetch_santiment_sentiment(symbol)
@@ -252,10 +270,10 @@ def scan_auto():
             results.append({
                 "symbol": symbol,
                 "name": coin["name"],
-                "price": coin["quote"]["USD"]["price"],
-                "market_cap": coin["quote"]["USD"]["market_cap"],
-                "volume": coin["quote"]["USD"]["volume_24h"],
-                "price_change_24h": coin["quote"]["USD"].get("percent_change_24h", 0),
+                "price": coin["current_price"],
+                "market_cap": coin.get("market_cap", 0),
+                "volume": coin.get("total_volume", 0),
+                "price_change_24h": coin.get("price_change_percentage_24h", 0),
                 "rsi": indicators.get("rsi"),
                 "rvol": indicators.get("rvol"),
                 "ema_alignment": indicators.get("ema_alignment"),
@@ -266,7 +284,7 @@ def scan_auto():
                 "sentiment_score": sentiment,
                 "news_mentions": news_mentions,
                 "reddit_mentions": reddit_mentions,
-                "coinmarketcap_url": f"https://coinmarketcap.com/currencies/{coin['slug']}/"
+                "coingecko_url": f"https://www.coingecko.com/en/coins/{coin['id']}"
             })
             if ALERT_HISTORY.get(symbol, 0) < time.time() - 6*3600:
                 send_telegram_alert(coin)
