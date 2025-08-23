@@ -1,187 +1,96 @@
 import os
 import time
+import logging
 import requests
-from fastapi import FastAPI
-from typing import List, Dict
+from flask import Flask, jsonify
 
-app = FastAPI()
+app = Flask(__name__)
 
-LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY")
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
-SANTIMENT_API_KEY = os.getenv("SANTIMENT_API_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-ALERT_HISTORY = {}
-COINGECKO_CACHE = {"coins": [], "timestamp": 0}
-COINGECKO_CACHE_SECONDS = 600  # 10 minutes
+# Cache settings
+CACHE = {"data": None, "timestamp": 0}
+CACHE_TTL = 60  # cache results for 60 seconds
 
-def retry_get(url, params=None, headers=None, max_retries=3, backoff=2):
-    for i in range(max_retries):
-        try:
-            resp = requests.get(url, params=params, headers=headers, timeout=30)
-            if resp.status_code == 429:
-                wait = backoff ** i
-                print(f"Rate limited by {url}, retrying in {wait}s...")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            return resp
-        except Exception as e:
-            print(f"Request error {url}: {e}")
-            if i == max_retries - 1:
-                return None
-            time.sleep(backoff ** i)
-    return None
+COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
+PARAMS = {
+    "vs_currency": "usd",
+    "order": "volume_desc",
+    "per_page": 250,
+    "page": 1,
+    "sparkline": False,
+}
 
-def fetch_coingecko_coins_cached() -> List[Dict]:
+
+def fetch_from_coingecko():
+    """Fetch coins from CoinGecko with retry + caching."""
+    global CACHE
+
     now = time.time()
-    if COINGECKO_CACHE["coins"] and now - COINGECKO_CACHE["timestamp"] < COINGECKO_CACHE_SECONDS:
-        print(f"Using cached CoinGecko data: {len(COINGECKO_CACHE['coins'])} coins")
-        return COINGECKO_CACHE["coins"]
+    # If cache is fresh, return it
+    if CACHE["data"] and (now - CACHE["timestamp"] < CACHE_TTL):
+        logger.info("Using cached CoinGecko data")
+        return CACHE["data"]
 
-    coins = []
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "order": "market_cap_desc",
-        "per_page": 100,
-        "page": 1,
-        "sparkline": True
-    }
-    resp = retry_get(url, params=params)
-    if resp is not None:
-        data = resp.json()
-        coins.extend(data)
-    COINGECKO_CACHE["coins"] = coins
-    COINGECKO_CACHE["timestamp"] = now
-    print(f"Fetched {len(coins)} coins from CoinGecko (cached).")
-    return coins
+    tries = 3
+    for attempt in range(tries):
+        try:
+            resp = requests.get(COINGECKO_URL, params=PARAMS, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                CACHE = {"data": data, "timestamp": now}
+                logger.info(f"Fetched {len(data)} coins from CoinGecko")
+                return data
+            elif resp.status_code == 429:
+                # Rate limited
+                wait_time = (attempt + 1) * 2
+                logger.warning(f"Rate limited by CoinGecko, retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"CoinGecko error {resp.status_code}: {resp.text}")
+                break
+        except Exception as e:
+            logger.error(f"Error fetching CoinGecko: {e}")
+            time.sleep(2)
 
-def calculate_indicators(coin: Dict) -> Dict:
-    prices = coin.get("sparkline_in_7d", {}).get("price", [])
-    if not prices or len(prices) < 5:
-        print(f"{coin['symbol'].upper()} skipped: insufficient sparkline data ({len(prices) if prices else 0})")
-        return {}
+    # fallback to cache if fetch fails
+    if CACHE["data"]:
+        logger.warning("Using cached CoinGecko data (fallback)")
+        return CACHE["data"]
 
-    # Calculate RSI with fallback for shorter data
-    deltas = [prices[i+1] - prices[i] for i in range(len(prices)-1)]
-    window = min(14, len(deltas))
-    gains = [d for d in deltas[-window:] if d > 0]
-    losses = [-d for d in deltas[-window:] if d < 0]
-    avg_gain = sum(gains)/window if gains else 0.0001
-    avg_loss = sum(losses)/window if losses else 0.0001
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
+    return []
 
-    def ema(prices_list, period):
-        k = 2 / (period + 1)
-        ema_val = prices_list[0]
-        for price in prices_list[1:]:
-            ema_val = price * k + ema_val * (1 - k)
-        return ema_val
 
-    ema5 = ema(prices, min(5, len(prices)))
-    ema13 = ema(prices, min(13, len(prices)))
-    ema50 = ema(prices, min(50, len(prices)))
-    ema_alignment = ema5 > ema13 > ema50
+@app.route("/")
+def home():
+    return jsonify({"status": "running"})
 
-    vwap = sum(prices) / len(prices)
-    vwap_proximity = abs(coin["current_price"] - vwap) / vwap <= 0.02
 
-    avg_vol = coin.get("total_volume", 0) / 7 if coin.get("total_volume") else 0.0001
-    rvol = coin.get("total_volume", 0) / avg_vol if avg_vol else 0
-
-    if len(prices) > 3:
-        last_hour = prices[-3:]
-        pump_filter = (max(last_hour) - min(last_hour)) / min(last_hour) > 0.5 and coin.get("total_volume", 0) < 20_000_000
-    else:
-        pump_filter = False
-
-    return {
-        "rsi": rsi,
-        "ema_alignment": ema_alignment,
-        "vwap_proximity": vwap_proximity,
-        "rvol": rvol,
-        "pump_filter": pump_filter
-    }
-
-def passes_filters(coin: Dict, indicators: Dict) -> bool:
-    price = coin["current_price"]
-    volume = coin["total_volume"]
-    market_cap = coin.get("market_cap", 0)
-    price_change = coin.get("price_change_percentage_24h", 0)
-    symbol = coin["symbol"].upper()
-    name = coin["name"].lower()
-
-    # Loosened filters for testing - adjust as needed
-    if not (0.001 <= price <= 100):
-        print(f"{symbol} failed price filter")
-        return False
-    if volume < 1_000_000:
-        print(f"{symbol} failed volume filter")
-        return False
-    if not (-10 <= price_change <= 50):
-        print(f"{symbol} failed price change filter")
-        return False
-    if not (5_000_000 <= market_cap <= 5_000_000_000):
-        print(f"{symbol} failed market cap filter")
-        return False
-    if not (30 <= indicators.get("rsi", 0) <= 80):
-        print(f"{symbol} failed RSI filter")
-        return False
-    if indicators.get("rvol", 0) < 1.5:
-        print(f"{symbol} failed RVOL filter")
-        return False
-    if not indicators.get("ema_alignment", False):
-        print(f"{symbol} failed EMA alignment filter")
-        return False
-    if not indicators.get("vwap_proximity", False):
-        print(f"{symbol} failed VWAP proximity filter")
-        return False
-    if indicators.get("pump_filter", False):
-        print(f"{symbol} failed pump filter")
-        return False
-    if ALERT_HISTORY.get(symbol, 0) > time.time() - 6*3600:
-        print(f"{symbol} failed duplicate alert filter")
-        return False
-    return True
-
-@app.get("/")
-def root():
-    return {"message": "Crypto Trading Scanner API is running. Use /scan/auto for results."}
-
-@app.head("/")
-def root_head():
-    return
-
-@app.get("/scan/auto")
-def scan_auto():
-    coins = fetch_coingecko_coins_cached()
-    print(f"Using cached CoinGecko data: {len(coins)} coins")
+@app.route("/scan")
+def scan():
+    coins = fetch_from_coingecko()
     results = []
-    filtered = 0
+
     for coin in coins:
-        symbol = coin["symbol"].upper()
-        indicators = calculate_indicators(coin)
-        if not indicators:
-            continue
-        if passes_filters(coin, indicators):
-            filtered += 1
-            results.append({
-                "symbol": symbol,
-                "name": coin["name"],
-                "price": coin["current_price"],
-                "market_cap": coin.get("market_cap", 0),
-                "volume": coin.get("total_volume", 0),
-                "price_change_24h": coin.get("price_change_percentage_24h", 0),
-                "rsi": indicators.get("rsi"),
-                "rvol": indicators.get("rvol"),
-                "ema_alignment": indicators.get("ema_alignment"),
-                "vwap_proximity": indicators.get("vwap_proximity"),
-                "coingecko_url": f"https://www.coingecko.com/en/coins/{coin['id']}"
-            })
-            ALERT_HISTORY[symbol] = time.time()
-    print(f"Coins passing all filters: {filtered}")
-    return {"results": results}
+        try:
+            # Example filter: price between $0.01 and $10
+            if 0.01 <= coin["current_price"] <= 10:
+                results.append({
+                    "symbol": coin["symbol"],
+                    "name": coin["name"],
+                    "price": coin["current_price"],
+                    "volume": coin["total_volume"],
+                    "market_cap": coin["market_cap"]
+                })
+        except Exception as e:
+            logger.error(f"Error processing coin: {e}")
+
+    logger.info(f"Coins passing all filters: {len(results)}")
+    return jsonify(results)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
