@@ -1,32 +1,31 @@
+import logging
 import time
-import threading
-from datetime import datetime, timedelta
-from scanner_tier1 import tier1_scan
-from scanner_tier2 import tier2_scan
+from datetime import datetime
+import pytz
+from config import START_HOUR, END_HOUR, SCAN_INTERVAL_MINUTES, TIMEZONE
+from scanner_tier1 import run_tier1_scan
+from scanner_tier2 import run_tier2_scan
+from telegram_alerts import send_telegram_message
 
-BST_OFFSET = 1  # BST = UTC+1
+tz = pytz.timezone(TIMEZONE)
 
-def is_bst_active_hours():
-    now_utc = datetime.utcnow()
-    now_bst = now_utc + timedelta(hours=BST_OFFSET)
-    return 8 <= now_bst.hour < 21
-
-def auto_scan_loop():
+def run_scheduler():
+    last_run = None
     while True:
-        if is_bst_active_hours():
-            print("Running Tier 1 Auto Scan...")
-            watchlist = tier1_scan()
-            print(f"Tier 1 found {len(watchlist)} coins.")
-            # Optionally trigger Tier 2 for top coins or events
-        else:
-            print("Outside active hours, sleeping...")
-        time.sleep(45 * 60)  # 45 minutes
-
-def manual_scan(symbols):
-    print("Running Tier 2 Manual Scan...")
-    results = tier2_scan(symbols)
-    print(f"Tier 2 scan complete: {len(results)} results.")
-    return results
-
-# To start auto scan in background:
-# threading.Thread(target=auto_scan_loop, daemon=True).start()
+        now = datetime.now(tz)
+        if START_HOUR <= now.hour < END_HOUR:
+            if not last_run or (now - last_run).seconds >= SCAN_INTERVAL_MINUTES * 60:
+                logging.info(f"🕒 Running scan at {now}")
+                try:
+                    candidates = run_tier1_scan()
+                    filtered = run_tier2_scan(candidates)
+                    if filtered:
+                        for coin in filtered:
+                            send_telegram_message(f"✅ {coin['symbol']} passed filters: {coin}")
+                    else:
+                        logging.info("No coins matched criteria this cycle.")
+                except Exception as e:
+                    logging.error(f"Error in scan cycle: {e}")
+                    send_telegram_message(f"⚠️ Error in scan cycle: {e}")
+                last_run = now
+        time.sleep(60)
