@@ -13,7 +13,7 @@ LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY")
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 SANTIMENT_API_KEY = os.getenv("SANTIMENT_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 
 ALERT_HISTORY = {}
@@ -39,7 +39,7 @@ def retry_get(url, params=None, headers=None, max_retries=3, backoff=2):
 @lru_cache(maxsize=1)
 def fetch_coingecko_coins_cached() -> List[Dict]:
     coins = []
-    pages_to_fetch = 2  # 500 coins, adjust as needed
+    pages_to_fetch = 2
     for page in range(1, pages_to_fetch + 1):
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
@@ -191,7 +191,6 @@ def passes_filters(coin: Dict, indicators: Dict, social: Dict, sentiment: float,
     symbol = coin["symbol"].upper()
     name = coin["name"].lower()
 
-    # --- Balanced & Relaxed Criteria ---
     if not (0.005 <= price <= 50):
         print(f"{symbol} failed price filter")
         return False
@@ -222,13 +221,11 @@ def passes_filters(coin: Dict, indicators: Dict, social: Dict, sentiment: float,
     if ALERT_HISTORY.get(symbol, 0) > time.time() - 6*3600:
         print(f"{symbol} failed duplicate alert filter")
         return False
-    # Social / Sentiment
     if (social.get("twitter_mentions", 0) + twitter_mentions < 10 or
         social.get("engagement_score", 0) < 100 or
         sentiment < 0.6):
         print(f"{symbol} failed social/sentiment filter")
         return False
-    # Meme coin logic: allow only if volume + sentiment criteria met
     if "meme" in name or "doge" in name or "shiba" in name or "inu" in name:
         if not (volume > 15_000_000 and sentiment >= 0.6):
             print(f"{symbol} failed meme coin filter")
@@ -237,6 +234,7 @@ def passes_filters(coin: Dict, indicators: Dict, social: Dict, sentiment: float,
 
 def send_telegram_alert(coin: Dict):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials not set.")
         return
     msg = (
         f"🚨 *{coin['name']}* ({coin['symbol'].upper()})\n"
@@ -253,7 +251,8 @@ def send_telegram_alert(coin: Dict):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, data=payload)
+        r = requests.post(url, data=payload)
+        print("Telegram alert sent:", r.text)
     except Exception as e:
         print(f"Telegram alert failed: {e}")
 
