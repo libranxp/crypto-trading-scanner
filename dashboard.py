@@ -1,5 +1,3 @@
-# dashboard.py
-
 import streamlit as st
 import requests
 
@@ -7,7 +5,6 @@ st.title("Crypto Trading Scanner Dashboard")
 
 API_URL = "https://crypto-trading-scanner.onrender.com/scan/auto"
 
-st.write("Fetching live data...")
 try:
     resp = requests.get(API_URL, timeout=60)
     data = resp.json()
