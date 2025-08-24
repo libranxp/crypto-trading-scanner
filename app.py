@@ -1,86 +1,77 @@
 import logging
-from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
-from scanner_tier1 import tier1_scan
-from scanner_tier2 import tier2_analysis_for_coin
-from scheduler import start_scheduler, stop_scheduler
-from typing import List, Optional
-import uvicorn
+from typing import Optional
+from fastapi import FastAPI, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
+from services.scanner import run_auto_scan
+from db import supabase, TABLE
+from config import PORT
 
-logger = logging.getLogger()
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="Crypto Trading Scanner API")
+app = FastAPI(title="Crypto Trading Scanner", version="2.0")
 
-@app.on_event("startup")
-def on_startup():
-    logger.info("Starting scheduler...")
-    try:
-        start_scheduler()
-    except Exception:
-        logger.exception("Failed to start scheduler")
-
-@app.on_event("shutdown")
-def on_shutdown():
-    logger.info("Shutting down scheduler...")
-    try:
-        stop_scheduler()
-    except Exception:
-        logger.exception("Failed to stop scheduler")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
 
 @app.get("/")
-async def root():
-    return {"status": "ok", "message": "Crypto Scanner API running"}
+def home():
+    return {
+        "service": "crypto-trading-scanner",
+        "status": "ok",
+        "endpoints": ["/scan/auto", "/scan/manual?symbols=BTC,ETH", "/healthz"]
+    }
+
+# Render’s health checks sometimes use HEAD; return 200 to avoid 405 logs.
+@app.head("/")
+def head_root():
+    return Response(status_code=200)
+
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
 
 @app.get("/scan/auto")
-async def scan_auto():
-    """
-    Tier1 auto scan: runs lightweight filters and returns results list.
-    """
+def scan_auto():
     try:
-        results = tier1_scan(limit_coins=250)
-        # ensure list of dicts
-        sanitized = []
-        for r in results:
-            if not isinstance(r, dict):
-                logger.warning("scan_auto skipping invalid item: %s", r)
-                continue
-            # minimal sanitization
-            sanitized.append(r)
-        return JSONResponse({"results": sanitized})
+        results = run_auto_scan()
+        return {"status": "success", "count": len(results), "results": results}
     except Exception as e:
-        logger.exception("Auto scan failed: %s", e)
-        return JSONResponse({"error": "Auto scan failed", "details": str(e)}, status_code=500)
+        logging.exception("❌ Auto scan failed")
+        return {"status": "error", "message": str(e)}
 
 @app.get("/scan/manual")
-async def scan_manual(symbols: Optional[str] = Query(None, description="Comma separated symbols, or leave blank for sample")):
+def scan_manual(symbols: Optional[str] = Query(None, description="Comma-separated symbols")):
     """
-    Tier2 manual scan: accept comma separated symbols (e.g. BTC,ETH).
-    If no symbols provided, returns a small sample list (safe).
+    Manual fetch reads from Supabase latest rows that match provided symbols.
+    No hardcoded defaults: if no symbols given -> returns empty set.
     """
-    try:
-        out = []
-        if symbols:
-            symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-            # map symbols to CoinGecko ids is non-trivial; for demo we will try to match by name fetch
-            # Better approach: call Tier1 and filter by symbol.
-            candidates = tier1_scan(limit_coins=500)
-            sym_to_info = {c.get("symbol", "").upper(): c for c in candidates if isinstance(c, dict)}
-            for s in symbols_list:
-                info = sym_to_info.get(s)
-                if info:
-                    enriched = tier2_analysis_for_coin(info)
-                    out.append(enriched)
-                else:
-                    out.append({"symbol": s, "error": "Not found in latest markets scan"})
-        else:
-            # no symbols — return empty array (don't preseed tickers)
-            out = []
-        return JSONResponse({"results": out})
-    except Exception as e:
-        logger.exception("Manual scan failed: %s", e)
-        return JSONResponse({"error": "Manual scan failed", "details": str(e)}, status_code=500)
+    if not symbols:
+        return {"status": "success", "count": 0, "results": []}
 
-# if you want to run locally with `python app.py`
+    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not wanted:
+        return {"status": "success", "count": 0, "results": []}
+
+    try:
+        # Get most recent 200 and filter in-memory to keep it simple & cheap
+        resp = supabase.table(TABLE).select("*").order("id", desc=True).limit(200).execute()
+        rows = resp.data or []
+        out = [r for r in rows if str(r.get("symbol", "")).upper() in wanted]
+        return {"status": "success", "count": len(out), "results": out}
+    except Exception as e:
+        logging.error(f"❌ Manual scan failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+# If you ever run locally: `python app.py`
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=10000, log_level="info")
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
