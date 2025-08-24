@@ -1,15 +1,10 @@
 import os
 
-# CoinGecko (no API key required)
-COINGECKO_API_URL = os.environ.get("COINGECKO_API_URL", "https://api.coingecko.com/api/v3")
+# Existing API keys...
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
-# Telegram
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
-
-# Other optional APIs (if you want to wire them up later)
-COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY", "")
-LUNARCRUSH_API_KEY = os.environ.get("LUNARCRUSH_API_KEY", "")
-
-# Scanner config
-DUPLICATE_ALERT_HOURS = int(os.environ.get("DUPLICATE_ALERT_HOURS", 6))
+# Supabase keys
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
