@@ -17,7 +17,6 @@ def auto_scan():
     Populates dashboard watchlist using low-cost API calls.
     """
     try:
-        # Example CoinGecko API call
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
@@ -39,7 +38,7 @@ def auto_scan():
                     "market_cap": coin["market_cap"],
                     "volume": coin["total_volume"],
                     "price_change_24h": coin.get("price_change_percentage_24h", 0),
-                    "rsi": 50,  # placeholder (compute later)
+                    "rsi": 50,  # placeholder (later from technical_indicators.py)
                     "rvol": 1.0,  # placeholder
                     "coingecko_url": f"https://www.coingecko.com/en/coins/{coin['id']}"
                 })
@@ -58,7 +57,7 @@ def manual_scan():
     Run advanced technical + sentiment + catalyst analysis.
     """
     try:
-        # Placeholder response (can plug into TradingView, LunarCrush, etc.)
+        # Placeholder response
         results = [{
             "name": "Bitcoin",
             "symbol": "BTC",
