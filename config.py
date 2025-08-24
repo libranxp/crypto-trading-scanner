@@ -1,28 +1,15 @@
 import os
-from pathlib import Path
 
-# Core data dir (persist within container lifecycle)
-DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# External APIs
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
-
-# Optional APIs (only used if keys exist)
-LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY")
-SANTIMENT_API_KEY = os.getenv("SANTIMENT_API_KEY")
-COINMARKETCAL_API_KEY = os.getenv("COINMARKETCAL_API_KEY")
+# CoinGecko (no API key required)
+COINGECKO_API_URL = os.environ.get("COINGECKO_API_URL", "https://api.coingecko.com/api/v3")
 
 # Telegram
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 
-# Scheduler window (BST)
-SCHEDULE_START_HOUR = int(os.getenv("SCHEDULE_START_HOUR_BST", "8"))   # 08:00 BST
-SCHEDULE_END_HOUR   = int(os.getenv("SCHEDULE_END_HOUR_BST", "21"))    # 21:00 BST
-SCHEDULE_INTERVAL_MIN = int(os.getenv("SCHEDULE_INTERVAL_MIN", "45"))  # every 45 min
+# Other optional APIs (if you want to wire them up later)
+COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY", "")
+LUNARCRUSH_API_KEY = os.environ.get("LUNARCRUSH_API_KEY", "")
 
-# Files for caching and duplicate control
-ALERTS_LOG_FILE = DATA_DIR / "alerts_log.json"
-TIER1_CACHE_FILE = DATA_DIR / "tier1_latest.json"
-TIER2_CACHE_FILE = DATA_DIR / "tier2_latest.json"
+# Scanner config
+DUPLICATE_ALERT_HOURS = int(os.environ.get("DUPLICATE_ALERT_HOURS", 6))
