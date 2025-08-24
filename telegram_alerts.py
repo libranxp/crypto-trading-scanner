@@ -1,23 +1,51 @@
+import os
 import requests
+import logging
+
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
 
-def send_telegram_alert(coin: dict):
+logger = logging.getLogger(__name__)
+
+def send_telegram_message(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
-        return
-    message = (
-        f"🚨 *Crypto Alert*\n"
-        f"🪙 {coin['name']} ({coin['symbol']})\n"
-        f"💰 Price: ${coin['price']:.4f}\n"
-        f"📊 MC: ${coin['market_cap']:,} | Vol(24h): ${coin['volume']:,}\n"
-        f"📈 RSI: {coin.get('rsi','N/A'):.2f} | RVOL: {coin.get('rvol','N/A'):.2f}\n"
-        f"🧭 EMA align: {'Yes' if coin.get('ema_aligned') else 'No'} | VWAP Δ: {coin.get('vwap_proximity',0)*100:.2f}%\n"
-        f"💬 Mentions: {coin.get('mentions',0)} | 📣 Engagement: {coin.get('engagement',0)} | ⭐ Sent: {coin.get('sentiment_score',0):.2f}\n"
-        f"📅 Events: {coin.get('events',0)} | 🤖 AI Score: {coin.get('ai_score','N/A')} | ⚠️ Risk: {coin.get('risk','N/A')}\n"
-        f"🔗 {coin.get('coingecko_url','')}"
-    )
+        logger.warning("Telegram credentials not set; skipping alert.")
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(url, json=payload, timeout=15).raise_for_status()
-    except Exception:
-        pass
+        r = requests.post(url, json=payload, timeout=10)
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        logger.exception("Failed to send Telegram message")
+        return False
+
+def send_telegram_alert_for_coin(coin: dict):
+    # coin is validated upstream so we can format safely
+    name = coin.get("name", "Unknown")
+    symbol = coin.get("symbol", "UNK")
+    price = coin.get("price", 0)
+    volume = coin.get("volume", 0)
+    rsi = coin.get("rsi", "N/A")
+    rvol = coin.get("rvol", "N/A")
+    sentiment = coin.get("sentiment_score", "N/A")
+    ai_score = coin.get("ai_score", "N/A")
+    vwap_prox = coin.get("vwap_proximity", 0)
+
+    msg = (
+        f"🚨 *Crypto Alert*\n"
+        f"🪙 *{name}* ({symbol})\n"
+        f"💰 Price: `${price:.6f}`\n"
+        f"📊 Volume(24h): `${volume:,}`\n"
+        f"📈 RSI: {rsi}\n"
+        f"📉 RVOL: {rvol}\n"
+        f"📍 VWAP proximity: {vwap_prox*100:.2f}%\n"
+        f"⭐ Sentiment: {sentiment}\n"
+        f"🤖 AI score: {ai_score}\n"
+        f"\n{coin.get('coingecko_url','')}"
+    )
+    return send_telegram_message(msg)
