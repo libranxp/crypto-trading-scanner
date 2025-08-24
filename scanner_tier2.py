@@ -1,114 +1,76 @@
-import os
-import requests
-import logging
+import json
 from datetime import datetime, timedelta, timezone
-from supabase import create_client, Client
+from config import (
+    ALERTS_LOG_FILE, TIER1_CACHE_FILE, TIER2_CACHE_FILE
+)
+from sentiment_analysis import lunarcrush_sentiment, santiment_mentions, coinmarketcal_events
 from telegram_alerts import send_telegram_alert
 
-# Environment variables
-LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY")
-SANTIMENT_API_KEY = os.getenv("SANTIMENT_API_KEY")
-COINMARKETCAL_API_KEY = os.getenv("COINMARKETCAL_API_KEY")
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-logging.basicConfig(level=logging.INFO)
-
-def get_lunarcrush_sentiment(symbol):
+def _load_json(path):
+    if not path.exists():
+        return {}
     try:
-        url = f"https://lunarcrush.com/api3/assets?symbol={symbol.upper()}"
-        headers = {"Authorization": f"Bearer {LUNARCRUSH_API_KEY}"}
-        resp = requests.get(url, headers=headers, timeout=30)
-        data = resp.json().get("data", [])
-        if data:
-            return data[0].get("galaxy_score", 50)
+        return json.loads(path.read_text() or "{}")
     except Exception:
-        return 50
+        return {}
 
-def get_santiment_sentiment(symbol):
-    try:
-        query = """
-        {
-          getMetric(metric: "social_volume_total") {
-            timeseriesData(
-              slug: "%s"
-              from: "utc_now-1d"
-              to: "utc_now"
-              interval: "1d"
-            ) {
-              value
-            }
-          }
-        }
-        """ % symbol.lower()
-        url = "https://api.santiment.net/graphql"
-        headers = {"Authorization": f"Apikey {SANTIMENT_API_KEY}"}
-        resp = requests.post(url, json={"query": query}, headers=headers, timeout=30)
-        return resp.json()["data"]["getMetric"]["timeseriesData"][0]["value"]
-    except Exception:
-        return 0
+def _save_json(path, obj):
+    path.write_text(json.dumps(obj, indent=2))
 
-def get_coinmarketcal_events(symbol):
-    try:
-        headers = {"x-api-key": COINMARKETCAL_API_KEY}
-        url = f"https://developers.coinmarketcal.com/v1/events?coins={symbol.lower()}"
-        resp = requests.get(url, headers=headers, timeout=30)
-        events = resp.json().get("body", [])
-        return len(events)
-    except Exception:
-        return 0
+def _duplicate_recent(symbol: str, hours: int = 6) -> bool:
+    log = _load_json(ALERTS_LOG_FILE)
+    last = log.get(symbol)
+    if not last:
+        return False
+    last_dt = datetime.fromisoformat(last)
+    return (datetime.now(timezone.utc) - last_dt) < timedelta(hours=hours)
 
-def calculate_ai_score(coin):
-    """Compute AI Score based on filters"""
+def _mark_alert(symbol: str):
+    log = _load_json(ALERTS_LOG_FILE)
+    log[symbol] = datetime.now(timezone.utc).isoformat()
+    _save_json(ALERTS_LOG_FILE, log)
+
+def ai_score(item):
     score = 0
-    if 50 <= coin.get("rsi", 0) <= 70: score += 1
-    if coin.get("rvol", 0) > 2: score += 1
-    if coin.get("sentiment_score", 0) > 0.6: score += 1
-    if coin.get("twitter_mentions", 0) >= 10: score += 1
-    if coin.get("engagement_score", 0) >= 100: score += 1
+    if 50 <= item.get("rsi", 0) <= 70: score += 1
+    if item.get("rvol", 0) >= 2:       score += 1
+    if item.get("sentiment_score", 0) >= 0.6: score += 1
+    if item.get("mentions", 0) >= 10:  score += 1
+    if item.get("engagement", 0) >= 100: score += 1
+    if item.get("events", 0) > 0:      score += 1
     return score
 
-def tier2_scan():
-    logging.info("🔍 Running Tier 2 Deep Scan...")
-    results = supabase.table("tier1_results").select("*").order("timestamp", desc=True).limit(20).execute()
-    candidates = results.data or []
+def run_tier2():
+    t1 = _load_json(TIER1_CACHE_FILE)
+    base = t1.get("results", [])
 
-    alerts = []
-    for coin in candidates:
-        # Check duplicate alerts
-        recent_alerts = supabase.table("alerts").select("*").eq("symbol", coin["symbol"]).order("timestamp", desc=True).limit(1).execute()
-        if recent_alerts.data:
-            last_time = datetime.fromisoformat(recent_alerts.data[0]["timestamp"])
-            if datetime.now(timezone.utc) - last_time < timedelta(hours=6):
-                continue
+    enriched = []
+    for coin in base:
+        sym = coin["symbol"]
 
-        # Sentiment + Catalyst
-        sentiment_score = get_lunarcrush_sentiment(coin["symbol"])
-        social_volume = get_santiment_sentiment(coin["symbol"])
-        events = get_coinmarketcal_events(coin["symbol"])
+        if _duplicate_recent(sym):
+            continue
 
-        enriched = {
+        sent = lunarcrush_sentiment(sym)
+        mentions = santiment_mentions(sym)
+        events = coinmarketcal_events(sym)
+        eng = mentions * 10  # rough proxy
+
+        item = {
             **coin,
-            "sentiment_score": sentiment_score,
-            "twitter_mentions": social_volume,
-            "engagement_score": social_volume * 10,
+            "sentiment_score": sent,
+            "mentions": mentions,
+            "engagement": eng,
             "events": events,
-            "ai_score": calculate_ai_score(coin),
-            "risk": "Medium" if sentiment_score > 60 else "High",
-            "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        item["ai_score"] = ai_score(item)
+        item["risk"] = "Medium" if item["sentiment_score"] >= 0.6 and item["rvol"] >= 2 else "High"
 
-        # Send Telegram Alert
-        send_telegram_alert(enriched)
+        # Alert + mark
+        send_telegram_alert(item)
+        _mark_alert(sym)
 
-        # Save to Supabase
-        supabase.table("alerts").insert(enriched).execute()
-        alerts.append(enriched)
+        enriched.append(item)
 
-    logging.info(f"✅ {len(alerts)} Tier 2 alerts sent.")
-    return alerts
-
-if __name__ == "__main__":
-    tier2_scan()
+    _save_json(TIER2_CACHE_FILE, {"results": enriched, "timestamp": datetime.now(timezone.utc).isoformat()})
+    return enriched
