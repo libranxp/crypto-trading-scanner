@@ -1,9 +1,6 @@
-fastapi==0.115.0
-uvicorn==0.30.6
-requests==2.32.5
-pandas==2.2.2
-numpy==1.26.4
-apscheduler==3.10.4
-python-dateutil==2.9.0.post0
-pytz==2025.2
-streamlit==1.37.1
+fastapi
+uvicorn
+requests
+pydantic
+apscheduler
+streamlit
