@@ -1,70 +1,106 @@
 import requests
-from datetime import datetime, timezone
-from config import COINGECKO_API_URL, TIER1_CACHE_FILE
-from technical_indicators import compute_all
+import logging
+from typing import List
+from technical_indicators import compute_technical_metrics
+from config import COINGECKO_API_URL
 
-# Filters as per your spec
-PRICE_MIN, PRICE_MAX = 0.005, 50
-MCAP_MIN, MCAP_MAX = 20_000_000, 2_000_000_000
-VOL_MIN = 15_000_000
-CHANGE_MIN, CHANGE_MAX = 2, 15  # %
-VWAP_MAX_DIST = 0.02  # 2%
-RSI_MIN, RSI_MAX = 50, 70
-RVOL_MIN = 2.0
+logger = logging.getLogger(__name__)
 
-def _fetch_market_page(page: int):
+# Criteria from your brief:
+PRICE_MIN = 0.005
+PRICE_MAX = 50.0
+VOLUME_MIN = 15_000_000  # $15M
+PRICE_CHANGE_MIN = 2.0
+PRICE_CHANGE_MAX = 15.0
+MARKETCAP_MIN = 20_000_000  # $20M
+MARKETCAP_MAX = 2_000_000_000  # $2B
+
+def fetch_top_markets(per_page=250, page=1) -> List[dict]:
     url = f"{COINGECKO_API_URL}/coins/markets"
     params = {
         "vs_currency": "usd",
-        "order": "volume_desc",
-        "per_page": 250,
+        "order": "market_cap_desc",
+        "per_page": per_page,
         "page": page,
         "sparkline": False
     }
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        if not isinstance(data, list):
+            logger.warning("CoinGecko markets returned non-list payload")
+            return []
+        return data
+    except Exception:
+        logger.exception("fetch_top_markets failed")
+        return []
 
-def run_tier1():
+def tier1_scan(limit_coins=250):
+    """
+    Return list of coins that pass the lightweight filters.
+    """
     results = []
-    # we grab top 500 by volume (2 pages)
-    all_coins = _fetch_market_page(1) + _fetch_market_page(2)
-    for c in all_coins:
-        price = c.get("current_price") or 0
-        mcap = c.get("market_cap") or 0
-        vol = c.get("total_volume") or 0
-        chg = c.get("price_change_percentage_24h") or 0
+    coins = fetch_top_markets(per_page=limit_coins, page=1)
+    for coin in coins:
+        # guard: sometimes API returns e.g. error strings — ensure dict
+        if not isinstance(coin, dict):
+            logger.warning("Skipping invalid coin entry (not dict): %s", coin)
+            continue
 
-        if not (PRICE_MIN <= price <= PRICE_MAX):        continue
-        if not (MCAP_MIN <= mcap <= MCAP_MAX):           continue
-        if vol < VOL_MIN:                                 continue
-        if not (CHANGE_MIN <= chg <= CHANGE_MAX):         continue
+        # defensive extraction
+        try:
+            symbol = (coin.get("symbol") or "").upper()
+            name = coin.get("name") or ""
+            price = float(coin.get("current_price") or 0.0)
+            volume = float(coin.get("total_volume") or 0.0)
+            price_change_24h = float(coin.get("price_change_percentage_24h") or 0.0)
+            market_cap = float(coin.get("market_cap") or 0.0)
+            coin_id = coin.get("id") or ""
+            coingecko_url = f"https://www.coingecko.com/en/coins/{coin_id}"
+        except Exception:
+            logger.exception("Failed to parse coin fields")
+            continue
 
-        # compute technicals from OHLC
-        tid = c["id"]  # coingecko unique id
-        tech = compute_all(tid)
-        if not (RSI_MIN <= tech["rsi"] <= RSI_MAX):       continue
-        if tech["rvol"] < RVOL_MIN:                       continue
-        if not tech["ema_aligned"]:                       continue
-        if tech["vwap_proximity"] > VWAP_MAX_DIST:        continue
-        if tech["pump_reject"]:                           continue
+        # filters
+        if not (PRICE_MIN <= price <= PRICE_MAX):
+            continue
+        if volume < VOLUME_MIN:
+            continue
+        if not (PRICE_CHANGE_MIN <= price_change_24h <= PRICE_CHANGE_MAX):
+            continue
+        if not (MARKETCAP_MIN <= market_cap <= MARKETCAP_MAX):
+            continue
+
+        # compute lightweight technical metrics (cheapish)
+        tech = compute_technical_metrics(coin_id, current_price=price)
+        rsi = tech.get("rsi", 60.0)
+        rvol = tech.get("rvol", 1.0)
+        ema_aligned = tech.get("ema_aligned", False)
+        vwap_proximity = tech.get("vwap_proximity", 0.0)
+
+        # RSI filter
+        if not (50 <= rsi <= 70):
+            continue
+        if rvol <= 2.0:
+            continue
+        # VWAP proximity filter ±2% (0.02)
+        if vwap_proximity > 0.02:
+            continue
 
         results.append({
-            "name": c["name"],
-            "symbol": c["symbol"].upper(),
-            "coingecko_id": tid,
-            "coingecko_url": f"https://www.coingecko.com/en/coins/{tid}",
-            "price": float(price),
-            "market_cap": int(mcap),
-            "volume": int(vol),
-            "price_change_24h": float(chg),
-            "rsi": tech["rsi"],
-            "rvol": tech["rvol"],
-            "ema_aligned": tech["ema_aligned"],
-            "vwap_proximity": tech["vwap_proximity"],
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "name": name,
+            "symbol": symbol,
+            "price": price,
+            "market_cap": market_cap,
+            "volume": volume,
+            "price_change_24h": price_change_24h,
+            "rsi": rsi,
+            "rvol": rvol,
+            "ema_aligned": ema_aligned,
+            "vwap_proximity": vwap_proximity,
+            "coingecko_url": coingecko_url,
+            "id": coin_id
         })
 
-    # cache to file for dashboard and Tier 2
-    TIER1_CACHE_FILE.write_text(__import__("json").dumps({"results": results}, indent=2))
     return results
