@@ -1,86 +1,86 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-import requests
 import logging
+from fastapi import FastAPI, Query
+from fastapi.responses import JSONResponse
+from scanner_tier1 import tier1_scan
+from scanner_tier2 import tier2_analysis_for_coin
+from scheduler import start_scheduler, stop_scheduler
+from typing import List, Optional
+import uvicorn
 
+logger = logging.getLogger()
 logging.basicConfig(level=logging.INFO)
-app = FastAPI()
+
+app = FastAPI(title="Crypto Trading Scanner API")
+
+@app.on_event("startup")
+def on_startup():
+    logger.info("Starting scheduler...")
+    try:
+        start_scheduler()
+    except Exception:
+        logger.exception("Failed to start scheduler")
+
+@app.on_event("shutdown")
+def on_shutdown():
+    logger.info("Shutting down scheduler...")
+    try:
+        stop_scheduler()
+    except Exception:
+        logger.exception("Failed to stop scheduler")
 
 @app.get("/")
-def root():
+async def root():
     return {"status": "ok", "message": "Crypto Scanner API running"}
 
-
 @app.get("/scan/auto")
-def auto_scan():
+async def scan_auto():
     """
-    Tier 1 – Lightweight Filters
-    Populates dashboard watchlist using low-cost API calls.
+    Tier1 auto scan: runs lightweight filters and returns results list.
     """
     try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {
-            "vs_currency": "usd",
-            "order": "volume_desc",
-            "per_page": 10,
-            "page": 1,
-            "sparkline": False,
-        }
-        resp = requests.get(url, params=params, timeout=30)
-
-        # Make sure response is JSON
-        try:
-            coins = resp.json()
-        except Exception as e:
-            logging.error(f"❌ Failed to parse JSON: {e}")
-            return JSONResponse({"error": "Invalid response from CoinGecko"}, status_code=500)
-
-        results = []
-        for coin in coins:
-            # Ensure item is a dictionary
-            if not isinstance(coin, dict):
-                logging.warning(f"⚠️ Skipping invalid entry: {coin}")
+        results = tier1_scan(limit_coins=250)
+        # ensure list of dicts
+        sanitized = []
+        for r in results:
+            if not isinstance(r, dict):
+                logger.warning("scan_auto skipping invalid item: %s", r)
                 continue
-
-            market_cap = coin.get("market_cap", 0)
-            volume = coin.get("total_volume", 0)
-
-            if market_cap > 100_000_000 and volume > 50_000_000:
-                results.append({
-                    "name": coin.get("name", "Unknown"),
-                    "symbol": coin.get("symbol", "").upper(),
-                    "price": coin.get("current_price", 0),
-                    "market_cap": market_cap,
-                    "volume": volume,
-                    "price_change_24h": coin.get("price_change_percentage_24h", 0),
-                    "rsi": 50,  # placeholder (later from technical_indicators.py)
-                    "rvol": 1.0,  # placeholder
-                    "coingecko_url": f"https://www.coingecko.com/en/coins/{coin.get('id', '')}"
-                })
-
-        return JSONResponse({"results": results})
-
+            # minimal sanitization
+            sanitized.append(r)
+        return JSONResponse({"results": sanitized})
     except Exception as e:
-        logging.error(f"❌ Auto scan failed: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
+        logger.exception("Auto scan failed: %s", e)
+        return JSONResponse({"error": "Auto scan failed", "details": str(e)}, status_code=500)
 
 @app.get("/scan/manual")
-def manual_scan():
+async def scan_manual(symbols: Optional[str] = Query(None, description="Comma separated symbols, or leave blank for sample")):
     """
-    Tier 2 – Deep Scan
-    Run advanced technical + sentiment + catalyst analysis.
+    Tier2 manual scan: accept comma separated symbols (e.g. BTC,ETH).
+    If no symbols provided, returns a small sample list (safe).
     """
     try:
-        results = [{
-            "name": "Bitcoin",
-            "symbol": "BTC",
-            "ai_score": 85,
-            "risk": "Medium",
-            "sentiment_score": 0.72,
-        }]
-        return JSONResponse({"results": results})
-
+        out = []
+        if symbols:
+            symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+            # map symbols to CoinGecko ids is non-trivial; for demo we will try to match by name fetch
+            # Better approach: call Tier1 and filter by symbol.
+            candidates = tier1_scan(limit_coins=500)
+            sym_to_info = {c.get("symbol", "").upper(): c for c in candidates if isinstance(c, dict)}
+            for s in symbols_list:
+                info = sym_to_info.get(s)
+                if info:
+                    enriched = tier2_analysis_for_coin(info)
+                    out.append(enriched)
+                else:
+                    out.append({"symbol": s, "error": "Not found in latest markets scan"})
+        else:
+            # no symbols — return empty array (don't preseed tickers)
+            out = []
+        return JSONResponse({"results": out})
     except Exception as e:
-        logging.error(f"❌ Manual scan failed: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        logger.exception("Manual scan failed: %s", e)
+        return JSONResponse({"error": "Manual scan failed", "details": str(e)}, status_code=500)
+
+# if you want to run locally with `python app.py`
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=10000, log_level="info")
