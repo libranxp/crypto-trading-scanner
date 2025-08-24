@@ -5,7 +5,6 @@ st.title("📊 Crypto Trading Scanner Dashboard")
 
 API_BASE = "https://crypto-trading-scanner.onrender.com"
 
-# Toggle between scans
 scan_type = st.selectbox("Choose Scan Type", ["Auto (Tier 1)", "Manual (Tier 2)"])
 
 if scan_type == "Auto (Tier 1)":
