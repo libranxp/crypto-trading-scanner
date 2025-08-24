@@ -1,45 +1,47 @@
+import os
 import requests
-from config import (
-    LUNARCRUSH_API_URL, LUNARCRUSH_API_KEY,
-    REDDIT_API_URL, REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT,
-    SANTIMENT_API_URL, SANTIMENT_API_KEY,
-    TWITTER_API_URL, TWITTER_BEARER_TOKEN
-)
+from config import LUNARCRUSH_API_KEY, SANTIMENT_API_KEY, COINMARKETCAL_API_KEY
 
-def get_lunarcrush_sentiment(symbol):
+def lunarcrush_sentiment(symbol: str) -> float:
+    if not LUNARCRUSH_API_KEY:
+        return 0.6
     try:
-        params = {"symbol": symbol.upper()}
+        url = f"https://lunarcrush.com/api3/assets?symbol={symbol.upper()}"
         headers = {"Authorization": f"Bearer {LUNARCRUSH_API_KEY}"}
-        resp = requests.get(f"{LUNARCRUSH_API_URL}/assets", params=params, headers=headers)
-        data = resp.json()
-        if data["data"]:
-            return data["data"][0].get("galaxy_score", 0)
+        r = requests.get(url, headers=headers, timeout=20)
+        data = r.json().get("data", [])
+        if data:
+            gs = data[0].get("galaxy_score")
+            if gs is None: return 0.6
+            # normalize 0–100 to 0–1
+            return min(max(gs/100.0, 0), 1)
     except Exception:
         pass
-    return 0
-
-def get_reddit_sentiment(subreddit="CryptoCurrency"):
-    # Simple example: fetch top posts and analyze sentiment (placeholder)
-    try:
-        headers = {"User-Agent": REDDIT_USER_AGENT}
-        url = f"{REDDIT_API_URL}/r/{subreddit}/hot.json?limit=10"
-        resp = requests.get(url, headers=headers)
-        posts = resp.json().get("data", {}).get("children", [])
-        # Placeholder: return fixed sentiment score
-        return 0.6
-    except Exception:
-        return 0
-
-def get_santiment_sentiment(symbol):
-    # Placeholder: GraphQL query to Santiment API (requires auth)
-    # Return fixed demo value
     return 0.6
 
-def get_twitter_metrics(symbol):
-    # Placeholder: Use Twitter API v2 to get mentions and engagement
-    # Return fixed demo values
-    return {
-        "mentions": 15,
-        "engagement_score": 150,
-        "influencer_flag": True
-    }
+def santiment_mentions(symbol: str) -> int:
+    if not SANTIMENT_API_KEY:
+        return 15
+    try:
+        query = """
+        { getMetric(metric:"social_volume_total"){
+            timeseriesData(slug:"%s", from:"utc_now-1d", to:"utc_now", interval:"1d"){ value }
+        } }""" % symbol.lower()
+        url = "https://api.santiment.net/graphql"
+        headers = {"Authorization": f"Apikey {SANTIMENT_API_KEY}"}
+        r = requests.post(url, json={"query": query}, headers=headers, timeout=20)
+        arr = r.json()["data"]["getMetric"]["timeseriesData"]
+        return int(arr[0]["value"]) if arr else 0
+    except Exception:
+        return 15
+
+def coinmarketcal_events(symbol: str) -> int:
+    if not COINMARKETCAL_API_KEY:
+        return 0
+    try:
+        headers = {"x-api-key": COINMARKETCAL_API_KEY}
+        url = f"https://developers.coinmarketcal.com/v1/events?coins={symbol.lower()}"
+        r = requests.get(url, headers=headers, timeout=20)
+        return len(r.json().get("body", []))
+    except Exception:
+        return 0
