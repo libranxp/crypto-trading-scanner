@@ -1,98 +1,76 @@
-import requests
-import numpy as np
-import pandas as pd
-import logging
-from typing import Optional, Tuple
-from config import COINGECKO_API_URL
+# technical_indicators.py
+import math
+from typing import List, Dict
 
-logger = logging.getLogger(__name__)
+def ema(series: List[float], period: int) -> List[float]:
+    if not series or period <= 0:
+        return []
+    k = 2 / (period + 1)
+    ema_vals = []
+    ema_prev = series[0]
+    ema_vals.append(ema_prev)
+    for price in series[1:]:
+        ema_prev = price * k + ema_prev * (1 - k)
+        ema_vals.append(ema_prev)
+    return ema_vals
 
-def fetch_market_chart(coin_id: str, vs_currency="usd", days=2) -> Optional[dict]:
-    """
-    Use CoinGecko /coins/{id}/market_chart to fetch price and volume history.
-    This returns 'prices', 'market_caps', 'total_volumes' arrays.
-    """
-    try:
-        url = f"{COINGECKO_API_URL}/coins/{coin_id}/market_chart"
-        params = {"vs_currency": vs_currency, "days": days}
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        logger.exception("market_chart failed")
-        return None
+def rsi(prices: List[float], period: int = 14) -> List[float]:
+    if len(prices) < period + 1:
+        return []
+    gains, losses = [], []
+    for i in range(1, len(prices)):
+        delta = prices[i] - prices[i-1]
+        gains.append(max(delta, 0))
+        losses.append(abs(min(delta, 0)))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    rsis = [None] * (period)  # first 'period' values are undefined
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        rs = (avg_gain / avg_loss) if avg_loss != 0 else math.inf
+        rsi_val = 100 - (100 / (1 + rs))
+        rsis.append(rsi_val)
+    return rsis
 
-def calculate_rsi_from_prices(prices: list, period: int = 14) -> float:
-    """
-    prices: list of [timestamp, price]
-    Returns last RSI value (simple Wilder's smoothing).
-    """
-    try:
-        if not prices or len(prices) < period + 1:
-            return 60.0
-        # extract just price numbers
-        p = np.array([p[1] for p in prices])
-        deltas = np.diff(p)
-        ups = np.where(deltas > 0, deltas, 0.0)
-        downs = np.where(deltas < 0, -deltas, 0.0)
-        # Wilder smoothing
-        roll_up = pd.Series(ups).rolling(window=period).mean().iloc[-1]
-        roll_down = pd.Series(downs).rolling(window=period).mean().iloc[-1]
-        if roll_down == 0:
-            return 100.0
-        rs = roll_up / roll_down
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        return float(rsi)
-    except Exception:
-        return 60.0
+def atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> List[float]:
+    if len(closes) < period + 1:
+        return []
+    trs = []
+    for i in range(1, len(closes)):
+        tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+        trs.append(tr)
+    # Wilder's smoothing
+    atrs = []
+    atr_prev = sum(trs[:period]) / period
+    atrs.extend([None]*period)
+    for i in range(period, len(trs)):
+        atr_prev = (atr_prev*(period-1) + trs[i]) / period
+        atrs.append(atr_prev)
+    return atrs
 
-def calculate_rvol_from_volumes(volumes: list) -> float:
-    """
-    volumes: list of [timestamp, volume]
-    RVOL defined here as latest_volume / average(volume[-(n+1):-1])
-    """
-    try:
-        if not volumes or len(volumes) < 3:
-            return 1.0
-        v = np.array([vv[1] for vv in volumes])
-        latest = v[-1]
-        # average of previous N (choose 24 if available)
-        n = min(24, len(v)-1)
-        avg_prev = v[-1-n:-1].mean() if n > 0 else v[:-1].mean()
-        if avg_prev == 0:
-            return 1.0
-        return float(latest / avg_prev)
-    except Exception:
-        return 1.0
+def vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> List[float]:
+    if not closes or not volumes or len(closes) != len(volumes):
+        return []
+    cum_pv, cum_v = 0.0, 0.0
+    vwaps = []
+    for i in range(len(closes)):
+        typical = (highs[i] + lows[i] + closes[i]) / 3.0
+        pv = typical * volumes[i]
+        cum_pv += pv
+        cum_v += volumes[i]
+        vwaps.append(cum_pv / cum_v if cum_v else None)
+    return vwaps
 
-def compute_technical_metrics(coin_id: str, current_price: float) -> dict:
-    """
-    Returns a dictionary: rsi, rvol, ema_aligned (simple), vwap_proximity
-    """
-    chart = fetch_market_chart(coin_id, days=3)
-    metrics = {"rsi": 60.0, "rvol": 1.0, "ema_aligned": False, "vwap_proximity": 0.0}
-    if not chart:
-        return metrics
+def rvol(volumes: List[float], lookback: int = 20) -> List[float]:
+    if len(volumes) < lookback:
+        return []
+    rv = [None]*(lookback-1)
+    for i in range(lookback-1, len(volumes)):
+        window = volumes[i-(lookback-1):i+1]
+        avg = sum(window)/len(window)
+        rv.append(volumes[i]/avg if avg else None)
+    return rv
 
-    prices = chart.get("prices", [])
-    volumes = chart.get("total_volumes", [])
-    metrics["rsi"] = calculate_rsi_from_prices(prices)
-    metrics["rvol"] = calculate_rvol_from_volumes(volumes)
-
-    # Simple EMA alignment check using recent prices (not ideal but inexpensive)
-    try:
-        p = pd.Series([pr[1] for pr in prices])
-        ema5 = p.ewm(span=5, adjust=False).mean().iloc[-1]
-        ema13 = p.ewm(span=13, adjust=False).mean().iloc[-1]
-        ema50 = p.ewm(span=50, adjust=False).mean().iloc[-1]
-        metrics["ema_aligned"] = (ema5 > ema13 > ema50)
-        # approximate VWAP over the fetched data: sum(price * vol)/sum(vol)
-        vol_arr = np.array([vv[1] for vv in volumes])
-        price_arr = np.array([pr[1] for pr in prices])
-        if vol_arr.sum() > 0:
-            vwap = (price_arr * vol_arr[:len(price_arr)]).sum() / vol_arr.sum()
-            metrics["vwap_proximity"] = abs(current_price - vwap) / vwap if vwap != 0 else 0.0
-    except Exception:
-        pass
-
-    return metrics
+def ema_alignment(ema5: float, ema13: float, ema50: float) -> bool:
+    return ema5 is not None and ema13 is not None and ema50 is not None and (ema5 > ema13 > ema50)
