@@ -1,43 +1,22 @@
-import requests
-from config import (
-    COINMARKETCAL_API_URL, COINMARKETCAL_API_KEY,
-    NEWSAPI_URL, NEWSAPI_KEY,
-    CRYPTOPANIC_API_URL, CRYPTOPANIC_API_KEY,
-    MESSARI_API_URL, MESSARI_API_KEY
-)
+# catalyst_analysis.py
+from typing import Dict, Any, List
 
-def get_coinmarketcal_events(symbol):
-    try:
-        headers = {"x-api-key": COINMARKETCAL_API_KEY}
-        params = {"coins": symbol.lower()}
-        resp = requests.get(f"{COINMARKETCAL_API_URL}/events", headers=headers, params=params)
-        data = resp.json()
-        return data.get("body", [])
-    except Exception:
-        return []
+def pick_best_catalyst(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Choose the catalyst with highest impact heuristic (source + engagement + recency).
+    """
+    if not candidates:
+        return {}
+    ranked = sorted(
+        candidates,
+        key=lambda c: (c.get("impact", 0), c.get("engagement", 0), c.get("ts", 0)),
+        reverse=True
+    )
+    return ranked[0]
 
-def get_newsapi_news(query):
-    try:
-        params = {"q": query, "apiKey": NEWSAPI_KEY, "language": "en", "pageSize": 5}
-        resp = requests.get(f"{NEWSAPI_URL}/everything", params=params)
-        data = resp.json()
-        return data.get("articles", [])
-    except Exception:
-        return []
-
-def get_cryptopanic_news():
-    try:
-        params = {"auth_token": CRYPTOPANIC_API_KEY}
-        resp = requests.get(CRYPTOPANIC_API_URL, params=params)
-        data = resp.json()
-        return data.get("results", [])
-    except Exception:
-        return []
-
-def get_messari_news(symbol):
-    try:
-        resp = requests.get(f"{MESSARI_API_URL}/assets/{symbol}/news", headers={"x-messari-api-key": MESSARI_API_KEY})
-        data = resp.json()
-        return data.get("data", [])
-    except Exception:
-        return []
+def catalyst_summary(best: Dict[str, Any]) -> str:
+    if not best:
+        return "No strong catalyst detected."
+    source = best.get("source", "News")
+    title = best.get("title") or best.get("summary") or "Update"
+    return f'{source}: "{title}"'
