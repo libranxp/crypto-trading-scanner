@@ -1,47 +1,41 @@
-import os
-import requests
-from config import LUNARCRUSH_API_KEY, SANTIMENT_API_KEY, COINMARKETCAL_API_KEY
+# sentiment_analysis.py
+from typing import Dict, Any, List
+import math
 
-def lunarcrush_sentiment(symbol: str) -> float:
-    if not LUNARCRUSH_API_KEY:
-        return 0.6
-    try:
-        url = f"https://lunarcrush.com/api3/assets?symbol={symbol.upper()}"
-        headers = {"Authorization": f"Bearer {LUNARCRUSH_API_KEY}"}
-        r = requests.get(url, headers=headers, timeout=20)
-        data = r.json().get("data", [])
-        if data:
-            gs = data[0].get("galaxy_score")
-            if gs is None: return 0.6
-            # normalize 0–100 to 0–1
-            return min(max(gs/100.0, 0), 1)
-    except Exception:
-        pass
-    return 0.6
+def aggregate_sentiment(lunar: Dict[str, Any], santiment: Dict[str, Any], reddit: Dict[str, Any], twitter: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize each to 0..1 and average with simple weights.
+    """
+    def norm(x, lo=0, hi=1):
+        if x is None: return None
+        return max(0.0, min(1.0, (x - lo) / (hi - lo))) if hi != lo else 0.0
 
-def santiment_mentions(symbol: str) -> int:
-    if not SANTIMENT_API_KEY:
-        return 15
-    try:
-        query = """
-        { getMetric(metric:"social_volume_total"){
-            timeseriesData(slug:"%s", from:"utc_now-1d", to:"utc_now", interval:"1d"){ value }
-        } }""" % symbol.lower()
-        url = "https://api.santiment.net/graphql"
-        headers = {"Authorization": f"Apikey {SANTIMENT_API_KEY}"}
-        r = requests.post(url, json={"query": query}, headers=headers, timeout=20)
-        arr = r.json()["data"]["getMetric"]["timeseriesData"]
-        return int(arr[0]["value"]) if arr else 0
-    except Exception:
-        return 15
+    scores = []
+    detail = {}
 
-def coinmarketcal_events(symbol: str) -> int:
-    if not COINMARKETCAL_API_KEY:
-        return 0
-    try:
-        headers = {"x-api-key": COINMARKETCAL_API_KEY}
-        url = f"https://developers.coinmarketcal.com/v1/events?coins={symbol.lower()}"
-        r = requests.get(url, headers=headers, timeout=20)
-        return len(r.json().get("body", []))
-    except Exception:
-        return 0
+    if lunar and "galaxy_score" in lunar:
+        s = norm(lunar["galaxy_score"]/100.0)  # LunarCrush Galaxy 0..100
+        scores.append(s)
+        detail["lunarcrush"] = s
+
+    if santiment and "sentiment" in santiment:
+        s = norm((santiment["sentiment"]+1)/2)  # map -1..1 -> 0..1
+        scores.append(s)
+        detail["santiment"] = s
+
+    if reddit and "engagement" in reddit:
+        s = norm(min(1.0, reddit["engagement"]/500.0))  # crude cap
+        scores.append(s)
+        detail["reddit"] = s
+
+    if twitter and "engagement" in twitter:
+        s = norm(min(1.0, twitter["engagement"]/1000.0))
+        scores.append(s)
+        detail["twitter"] = s
+
+    score = sum(scores)/len(scores) if scores else None
+    label = "Bullish" if score is not None and score >= 0.6 else ("Bearish" if score is not None and score <= 0.4 else "Neutral")
+    return {"score": score, "label": label, "detail": detail}
+
+def influencer_flag(twitter: Dict[str, Any]) -> bool:
+    return bool(twitter and twitter.get("influencer_hit", False))
