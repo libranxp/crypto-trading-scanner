@@ -1,26 +1,35 @@
 name: Crypto Scanner Scheduler
 
+# Run this workflow on a schedule and manually
 on:
   schedule:
-    - cron: "*/15 * * * *"  # every 15 minutes
+    # Every 10 minutes (can adjust)
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
-  run-scan:
+  run-scanner:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Call Render Deploy Hook (optional warm redeploy)
-        if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
-        run: |
-          curl -sSf -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" || true
 
-      - name: Trigger Render Web Service Scan (scan_and_alert)
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         run: |
-          # Hit your service endpoints directly if publicly reachable:
-          curl -sS "https://crypto-trading-scanner.onrender.com/scan/auto" >/dev/null || true
-          curl -sS -X POST "https://crypto-trading-scanner.onrender.com/scan/alert" >/dev/null || true
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Tier 1 Scanner
+        run: |
+          python scanner_tier1.py
+
+      - name: Run Tier 2 Scanner (optional/manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python scanner_tier2.py
