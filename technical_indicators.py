@@ -15,11 +15,8 @@ def atr(df, period: int = 14):
     high_low = df['high'] - df['low']
     high_close = (df['high'] - df['close'].shift()).abs()
     low_close = (df['low'] - df['close'].shift()).abs()
-    tr = high_low.to_frame(name="hl")
-    tr["hc"] = high_close
-    tr["lc"] = low_close
-    tr_max = tr.max(axis=1)
-    return tr_max.rolling(window=period).mean()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
 
 def vwap(df):
     pv = (df['close'] * df['volume']).cumsum()
@@ -37,7 +34,6 @@ def ema_alignment(df):
     return ema5 > ema13 > ema21
 
 def compute_technical_metrics(df):
-    """Return all computed technical metrics as dict"""
     return {
         "RSI": rsi(df).iloc[-1],
         "EMA5": ema(df, 5).iloc[-1],
