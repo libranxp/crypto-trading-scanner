@@ -1,38 +1,68 @@
-name: Crypto Scanner CI/CD
+name: Crypto Scanner Scheduler & Deploy
 
+# Trigger on push to main branch AND on schedule (every 10 minutes)
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
   schedule:
-    - cron: "*/15 * * * *"  # scanner runs every 15m
-  workflow_dispatch:
+    - cron: "*/10 * * * *"  # runs every 10 minutes
 
 jobs:
   run-scanner:
+    name: Run Crypto Scanner
     runs-on: ubuntu-latest
 
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-
     steps:
-      - name: Checkout repo
+      # 1️⃣ Checkout the repo
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
+      # 2️⃣ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: 3.13
 
-      - name: Install dependencies
+      # 3️⃣ Install dependencies
+      - name: Install Dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run scanner test
-        run: python -m services.scanner
-
-      - name: Trigger Render Deploy
+      # 4️⃣ Run the scanner script
+      - name: Run Scanner
         run: |
-          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+          python -m services.scanner
+
+      # 5️⃣ Optional: upload logs/artifacts
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: scanner-logs
+          path: logs/
+
+  deploy-render:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: run-scanner  # only deploy after scanner runs
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      # Set Render secrets as env variables
+      - name: Set Render Environment Variables
+        env:
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: echo "Render env variables set"
+
+      # Deploy using Render CLI
+      - name: Deploy to Render
+        run: |
+          curl -X POST "https://api.render.com/deploy/srv-${RENDER_SERVICE_ID}" \
+          -H "Authorization: Bearer ${RENDER_API_KEY}" \
+          -H "Accept: application/json" \
+          -H "Content-Type: application/json"
