@@ -1,30 +1,38 @@
-name: Crypto Scanner Scheduler
+name: Crypto Scanner CI/CD
 
 on:
+  push:
+    branches: ["main"]
   schedule:
-    - cron: "*/45 7-20 * * *"  # Every 45 minutes between 7:00 and 20:59 UTC
+    - cron: "*/15 * * * *"  # scanner runs every 15m
   workflow_dispatch:
 
 jobs:
-  tier1_and_tier2_scan:
+  run-scanner:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Trigger Tier 1 Auto Scan and Extract Symbols
-        id: tier1
-        run: |
-          echo "Calling Tier 1 /scan/auto endpoint..."
-          response=$(curl -s -X GET https://crypto-trading-scanner.onrender.com/scan/auto)
-          echo "Response: $response"
-          echo "$response" > response.json
-          # Extract symbols as comma-separated list
-          symbols=$(jq -r '.results[].symbol' response.json | tr '\n' ',' | sed 's/,$//')
-          echo "Extracted symbols: $symbols"
-          echo "SYMBOLS=$symbols" >> $GITHUB_ENV
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
-      - name: Trigger Tier 2 Manual Scan with Symbols
-        if: env.SYMBOLS != ''
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
         run: |
-          echo "Calling Tier 2 /scan/manual with symbols: $SYMBOLS"
-          tier2_response=$(curl -s -X GET "https://crypto-trading-scanner.onrender.com/scan/manual?symbols=$SYMBOLS")
-          echo "Tier 2 response: $tier2_response"
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scanner test
+        run: python -m services.scanner
+
+      - name: Trigger Render Deploy
+        run: |
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
