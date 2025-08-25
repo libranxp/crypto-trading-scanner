@@ -1,21 +1,51 @@
 # technical_indicators.py
+import pandas as pd
 
-def compute_technical_metrics(ticker_data):
-    """
-    Compute EMA, RSI, VWAP, ATR, etc.
-    ticker_data: DataFrame or dict with OHLCV data
-    Returns: dict with metrics
-    """
-    # Example calculations (replace with actual logic)
-    ema5 = ticker_data['close'].ewm(span=5).mean().iloc[-1]
-    ema13 = ticker_data['close'].ewm(span=13).mean().iloc[-1]
-    rsi = 50  # placeholder, replace with real calculation
-    vwap = (ticker_data['volume'] * ticker_data['close']).sum() / ticker_data['volume'].sum()
-    atr = 1  # placeholder
+def rsi(df, period: int = 14):
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def ema(df, period: int = 9):
+    return df['close'].ewm(span=period, adjust=False).mean()
+
+def atr(df, period: int = 14):
+    high_low = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift()).abs()
+    low_close = (df['low'] - df['close'].shift()).abs()
+    tr = high_low.to_frame(name="hl")
+    tr["hc"] = high_close
+    tr["lc"] = low_close
+    tr_max = tr.max(axis=1)
+    return tr_max.rolling(window=period).mean()
+
+def vwap(df):
+    pv = (df['close'] * df['volume']).cumsum()
+    vol = df['volume'].cumsum()
+    return pv / vol
+
+def rvol(df, period: int = 14):
+    avg_vol = df['volume'].rolling(window=period).mean()
+    return df['volume'] / avg_vol
+
+def ema_alignment(df):
+    ema5 = ema(df, 5).iloc[-1]
+    ema13 = ema(df, 13).iloc[-1]
+    ema21 = ema(df, 21).iloc[-1]
+    return ema5 > ema13 > ema21
+
+def compute_technical_metrics(df):
+    """Return all computed technical metrics as dict"""
     return {
-        'EMA5': ema5,
-        'EMA13': ema13,
-        'RSI': rsi,
-        'VWAP': vwap,
-        'ATR': atr
+        "RSI": rsi(df).iloc[-1],
+        "EMA5": ema(df, 5).iloc[-1],
+        "EMA13": ema(df, 13).iloc[-1],
+        "EMA21": ema(df, 21).iloc[-1],
+        "ATR": atr(df).iloc[-1],
+        "VWAP": vwap(df).iloc[-1],
+        "RVOL": rvol(df).iloc[-1],
+        "EMA_alignment": ema_alignment(df),
+        "last_close": df['close'].iloc[-1]
     }
