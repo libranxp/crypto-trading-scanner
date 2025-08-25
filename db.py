@@ -1,8 +1,15 @@
-from supabase import create_client
-from config import SUPABASE_URL, SUPABASE_KEY, SUPABASE_TABLE
+import os
+from supabase import create_client, Client
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("Supabase env vars missing: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY/ANON_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-TABLE = SUPABASE_TABLE
+TABLE = "scanner_results"
+
+if not SUPABASE_URL or not (SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY):
+    raise RuntimeError("❌ Supabase env vars missing. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY/ANON_KEY in Render.")
+
+# Prefer service role for writes, fallback to anon
+SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
