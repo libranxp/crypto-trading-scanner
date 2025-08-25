@@ -1,18 +1,48 @@
 # db.py
 import os
-from supabase import create_client, Client
+import time
+from typing import Any, Dict, List, Optional
+from config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TABLE_SCAN, TABLE_ALERTS
+import logging
 
-# Grab Supabase credentials from environment variables
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+logger = logging.getLogger(__name__)
 
-# Make sure at least one key is present
-if not SUPABASE_URL or not (SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY):
-    raise RuntimeError("Supabase env vars missing: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY/ANON_KEY")
+_supabase = None
+try:
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        from supabase import create_client, Client
+        _supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        logger.info("✅ Supabase client initialized.")
+    else:
+        logger.warning("⚠️ Supabase credentials missing; DB writes disabled.")
+except Exception as e:
+    logger.exception("Supabase init failed: %s", e)
 
-# Use service role key if available, else anon key
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY)
+def supabase_enabled() -> bool:
+    return _supabase is not None
 
-# Example table name (replace with your actual table)
-TABLE = "crypto_scan_data"
+def upsert_scan_rows(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+    if not supabase_enabled():
+        logger.debug("[DB SKIP] upsert_scan_rows len=%d", len(rows))
+        return
+    _supabase.table(TABLE_SCAN).upsert(rows, on_conflict="symbol,timestamp").execute()
+
+def log_alert(symbol: str, payload: Dict[str, Any]) -> None:
+    if not supabase_enabled():
+        logger.debug("[DB SKIP] log_alert %s", symbol)
+        return
+    rec = {"symbol": symbol, "payload": payload, "ts": int(time.time())}
+    _supabase.table(TABLE_ALERTS).insert(rec).execute()
+
+def get_recent_alerts(symbol: Optional[str]=None, since_unix: Optional[int]=None) -> List[Dict[str, Any]]:
+    if not supabase_enabled():
+        return []
+    q = _supabase.table(TABLE_ALERTS).select("*")
+    if symbol:
+        q = q.eq("symbol", symbol)
+    if since_unix:
+        q = q.gte("ts", since_unix)
+    res = q.order("ts", desc=True).limit(1000).execute()
+    return res.data or []
