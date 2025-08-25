@@ -1,16 +1,16 @@
 # scanner_tier1.py
-from technical_indicators import rsi, ema, atr, vwap, rvol, ema_alignment, compute_technical_metrics
+from technical_indicators import compute_technical_metrics
 import pandas as pd
 
 def tier1_scan(ticker_data):
     metrics = compute_technical_metrics(ticker_data)
-    # Add your Tier 1 lightweight filters here
+    # Tier 1 lightweight filters
     if 50 <= metrics['RSI'] <= 70 and metrics['EMA_alignment']:
         return metrics
     return None
 
 if __name__ == "__main__":
-    # Example OHLCV DataFrame (replace with live fetch)
+    # Dummy OHLCV for testing (replace with live fetch)
     df = pd.DataFrame({
         'open': [100, 102, 101, 105],
         'high': [102, 104, 103, 106],
