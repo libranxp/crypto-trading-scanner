@@ -1,48 +1,44 @@
 # db.py
 import os
-import time
-from typing import Any, Dict, List, Optional
-from config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TABLE_SCAN, TABLE_ALERTS
 import logging
+from supabase import create_client, Client
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_supabase = None
-try:
-    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
-        from supabase import create_client, Client
-        _supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-        logger.info("✅ Supabase client initialized.")
-    else:
-        logger.warning("⚠️ Supabase credentials missing; DB writes disabled.")
-except Exception as e:
-    logger.exception("Supabase init failed: %s", e)
+# Table name used by the dashboard
+TABLE = "scanner_results"
 
-def supabase_enabled() -> bool:
-    return _supabase is not None
+def _get_env_var(*names) -> Optional[str]:
+    """Return the first non-empty env var from names."""
+    for n in names:
+        v = os.getenv(n)
+        if v:
+            return v
+    return None
 
-def upsert_scan_rows(rows: List[Dict[str, Any]]) -> None:
-    if not rows:
-        return
-    if not supabase_enabled():
-        logger.debug("[DB SKIP] upsert_scan_rows len=%d", len(rows))
-        return
-    _supabase.table(TABLE_SCAN).upsert(rows, on_conflict="symbol,timestamp").execute()
+def get_supabase() -> Client:
+    """
+    Create and return a Supabase client.
+    Uses SUPABASE_URL + (SUPABASE_SERVICE_ROLE_KEY OR SUPABASE_ANON_KEY).
+    Raises RuntimeError with a helpful message if missing.
+    """
+    url = _get_env_var("SUPABASE_URL")
+    key = _get_env_var("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_ANON_KEY", "SUPABASE_ANONKEY")
 
-def log_alert(symbol: str, payload: Dict[str, Any]) -> None:
-    if not supabase_enabled():
-        logger.debug("[DB SKIP] log_alert %s", symbol)
-        return
-    rec = {"symbol": symbol, "payload": payload, "ts": int(time.time())}
-    _supabase.table(TABLE_ALERTS).insert(rec).execute()
+    if not url or not key:
+        msg = (
+            "Supabase env vars missing. Ensure SUPABASE_URL and "
+            "SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY are set."
+        )
+        logger.error(msg)
+        raise RuntimeError(msg)
 
-def get_recent_alerts(symbol: Optional[str]=None, since_unix: Optional[int]=None) -> List[Dict[str, Any]]:
-    if not supabase_enabled():
-        return []
-    q = _supabase.table(TABLE_ALERTS).select("*")
-    if symbol:
-        q = q.eq("symbol", symbol)
-    if since_unix:
-        q = q.gte("ts", since_unix)
-    res = q.order("ts", desc=True).limit(1000).execute()
-    return res.data or []
+    try:
+        supabase = create_client(url, key)
+        # quick test: attempt to fetch 0 rows (safe read)
+        supabase.table(TABLE).select("symbol").limit(0).execute()
+        return supabase
+    except Exception as e:
+        logger.exception("Failed to create Supabase client or test table access: %s", e)
+        raise
