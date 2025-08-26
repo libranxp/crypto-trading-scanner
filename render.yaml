@@ -1,32 +1,11 @@
 services:
   - type: web
-    name: crypto-trading-scanner
+    name: crypto-scanner
     env: python
-    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
       - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
-      - key: COINMARKETCAP_API_KEY
-        sync: false
-      - key: LUNARCRUSH_API_KEY
-        sync: false
-      - key: MESSARI_API_KEY
-        sync: false
-      - key: POLYGON_API_KEY
-        sync: false
-      - key: PRICE_MIN
-        value: "0.01"
-      - key: PRICE_MAX
-        value: "500"
-      - key: VOL_MIN
-        value: "1000000"
-      - key: MCAP_MAX
-        value: "2000000000"
