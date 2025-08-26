@@ -1,19 +1,40 @@
-name: Crypto Scanner Scheduler
+name: Crypto Scanner
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
+    # Tier 1 auto-scan every 15 minutes
+    - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Comma-separated symbols to run Tier 2 on (e.g. BTC,ETH,SOL)"
+        required: false
+        default: ""
+      run_tier1_first:
+        description: "Run Tier 1 first and feed its results into Tier 2"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+permissions:
+  contents: read
+
+env:
+  # Share a common location for artifacts
+  TIER1_OUTPUT_FILE: tier1_symbols.txt
 
 jobs:
-  run-scanner:
+  tier1:
+    # Run Tier 1 on schedule OR when manually requested with run_tier1_first=true
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_tier1_first == 'true')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -22,5 +43,106 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run scanner
-        run: python services/scanner.py
+      - name: Run Tier 1 (auto-scan, low-cost filters)
+        env:
+          # API / service keys — already in your repo secrets
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+          COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}
+          COINMARKETCAL_API_KEY: ${{ secrets.COINMARKETCAL_API_KEY }}
+          CRYPTOPANIC_API_KEY: ${{ secrets.CRYPTOPANIC_API_KEY }}
+          LUNARCRUSH_API_KEY: ${{ secrets.LUNARCRUSH_API_KEY }}
+          MESSARI_API_KEY: ${{ secrets.MESSARI_API_KEY }}
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_SECRET: ${{ secrets.REDDIT_SECRET }}
+          SANTIMENT_API_KEY: ${{ secrets.SANTIMENT_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          TAPPI_API_KEY: ${{ secrets.TAPPI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+        run: |
+          # Tier 1 should accept --out <file> to write the selected symbols (comma-separated)
+          python scanner_tier1.py --out "${TIER1_OUTPUT_FILE}"
+
+      - name: Upload Tier 1 symbols
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier1-output
+          path: ${{ env.TIER1_OUTPUT_FILE }}
+          if-no-files-found: ignore
+
+  tier2:
+    # Run Tier 2:
+    # - Always after tier1 on a schedule
+    # - Manually when requested (with or without Tier1)
+    needs: [tier1]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Try to download Tier 1 symbols
+        uses: actions/download-artifact@v4
+        with:
+          name: tier1-output
+          path: .
+        continue-on-error: true
+
+      - name: Decide symbols list
+        id: sym
+        shell: bash
+        run: |
+          INPUTS="${{ github.event.inputs.symbols }}"
+          FILE="${{ env.TIER1_OUTPUT_FILE }}"
+          if [[ -s "$FILE" ]]; then
+            SYMS="$(cat "$FILE" | tr -d '\n' | tr -d ' ' )"
+          else
+            SYMS="$(echo "$INPUTS" | tr -d ' ' )"
+          fi
+          echo "symbols=${SYMS}" >> $GITHUB_OUTPUT
+
+      - name: Run Tier 2 (deep analysis, AI score, risk)
+        env:
+          # API / service keys — already in your repo secrets
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+          COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}
+          COINMARKETCAL_API_KEY: ${{ secrets.COINMARKETCAL_API_KEY }}
+          CRYPTOPANIC_API_KEY: ${{ secrets.CRYPTOPANIC_API_KEY }}
+          LUNARCRUSH_API_KEY: ${{ secrets.LUNARCRUSH_API_KEY }}
+          MESSARI_API_KEY: ${{ secrets.MESSARI_API_KEY }}
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_SECRET: ${{ secrets.REDDIT_SECRET }}
+          SANTIMENT_API_KEY: ${{ secrets.SANTIMENT_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          TAPPI_API_KEY: ${{ secrets.TAPPI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+        run: |
+          SYMS="${{ steps.sym.outputs.symbols }}"
+          if [[ -n "$SYMS" ]]; then
+            python scanner_tier2.py --symbols "$SYMS"
+          else
+            # Fallback: let Tier 2 decide targets internally (e.g., pull from Supabase or Tier 1 criteria)
+            python scanner_tier2.py
+          fi
