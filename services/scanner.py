@@ -1,12 +1,16 @@
-# services/scanner.py
-from technical_indicators import compute_technical_metrics
+import pandas as pd
+import requests
 
-def run_auto_scan(df):
+def run_auto_scan():
     """
-    Runs Tier 1 auto scan on given OHLCV DataFrame.
-    Returns metrics dict if conditions met, else None.
+    Run automatic scan (used by scheduler / GitHub Actions / Render cronjob)
     """
-    metrics = compute_technical_metrics(df)
-    if 50 <= metrics['RSI'] <= 70 and metrics['EMA_alignment']:
-        return metrics
-    return None
+    # ✅ Replace this with your real scanning logic
+    return {"message": "Auto scan completed successfully"}
+
+def scan_and_alert():
+    """
+    Run manual scan + send alerts
+    """
+    # ✅ Replace this with your real alert logic (Telegram, Supabase, etc.)
+    return {"message": "Manual scan & alert triggered successfully"}
