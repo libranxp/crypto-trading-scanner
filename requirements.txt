@@ -1,5 +1,24 @@
+# Core dependencies
 pandas
 numpy
 requests
+
+# Web server
 fastapi
 uvicorn
+
+# Database
+supabase
+
+# Alerts
+python-telegram-bot
+
+# Technical analysis / indicators
+ta
+
+# Machine learning for AI score
+scikit-learn
+tensorflow
+
+# Optional but useful
+python-dotenv
