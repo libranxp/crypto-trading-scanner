@@ -1,23 +1,14 @@
-# duplicate_cache.py
 import time
-from typing import Dict, Tuple
-from config import DUP_SUPPRESSION_DELTA
-from db import get_recent_alerts
+from typing import Dict
 
-# Simple in-proc memory
-_last_alerts: Dict[str, int] = {}
+# In-memory cache during a single run (GA job). For multi-run dedupe, back it with Supabase later.
+_seen: Dict[str, float] = {}
+WINDOW_SEC = 6 * 60 * 60  # 6 hours
 
-def should_suppress(symbol: str) -> bool:
-    now = int(time.time())
-    last = _last_alerts.get(symbol)
-    if last and now - last < DUP_SUPPRESSION_DELTA.total_seconds():
-        return True
-    # Check DB for last 6h
-    recent = get_recent_alerts(symbol=symbol, since_unix=now - int(DUP_SUPPRESSION_DELTA.total_seconds()))
-    if recent:
-        _last_alerts[symbol] = recent[0]["ts"]
-        return True
-    return False
+def seen_recent(symbol: str) -> bool:
+    now = time.time()
+    t = _seen.get(symbol.upper())
+    return (t is not None) and (now - t < WINDOW_SEC)
 
-def mark_alert(symbol: str):
-    _last_alerts[symbol] = int(time.time())
+def mark_seen(symbol: str):
+    _seen[symbol.upper()] = time.time()
