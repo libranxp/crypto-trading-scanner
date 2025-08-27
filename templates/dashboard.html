@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Crypto Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    .ticker { border-bottom: 1px solid #ccc; padding: 10px; }
+    .ticker h2 { margin: 0; font-size: 1.2em; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.9em; }
+    .metrics div { flex: 1 1 30%; }
+  </style>
+</head>
+<body>
+  <h1>Crypto Signals Dashboard</h1>
+  {% for t in tickers %}
+  <div class="ticker">
+    <h2>{{ t.symbol }} - {{ t.name }}</h2>
+    <div class="metrics">
+      <div>Price: {{ t.price }}</div>
+      <div>Change: {{ t.change_pct }}%</div>
+      <div>RSI: {{ t.rsi }}</div>
+      <div>EMA5: {{ t.ema5 }}</div>
+      <div>EMA13: {{ t.ema13 }}</div>
+      <div>EMA50: {{ t.ema50 }}</div>
+      <div>VWAP: {{ t.vwap }}</div>
+      <div>ATR: {{ t.atr }}</div>
+      <div>RVOL: {{ t.rvol }}</div>
+      <div>AI Score: {{ t.ai_score }}</div>
+      <div>Risk SL: {{ t.risk.stop_loss }}</div>
+      <div>Risk TP: {{ t.risk.take_profit }}</div>
+    </div>
+    <div>
+      <a href="{{ t.links.tradingview }}">TradingView</a> |
+      <a href="{{ t.links.news[0] if t.links.news else '#' }}">News</a> |
+      <a href="{{ t.links.reddit[0] if t.links.reddit else '#' }}">Reddit</a> |
+      <a href="{{ t.links.tweet[0] if t.links.tweet else '#' }}">Tweet</a>
+    </div>
+  </div>
+  {% endfor %}
+</body>
+</html>
