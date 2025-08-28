@@ -1,173 +1,130 @@
-import math
+# scanner_tier2.py
 import os
-from typing import Dict, List
+import logging
+import json
+from db import supabase, insert_signal, upsert_signal
+from services.providers import get_ohlcv_coin_gecko, get_top_markets
+from technical_indicators import compute_metrics
+from datetime import datetime
 
-from config import (
-    MAX_MARKETS_TO_SCAN, MAX_TIER2_DEEP_CANDLES, QUOTE_CCY,
-    PRICE_MIN, PRICE_MAX, VOL_MIN, MCAP_MIN, MCAP_MAX,
-    CHANGE_MIN_PCT, CHANGE_MAX_PCT, RSI_MIN, RSI_MAX,
-    RVOL_MIN, VWAP_PROX_PCT, SOCIAL_MENTIONS_MIN, ENGAGEMENT_MIN,
-    SENTIMENT_MIN, REJECT_PUMP_PCT
-)
-from services.providers import (
-    get_market_list_cmc, get_ohlcv_polygon,
-    get_social_lunarcrush, get_news_links, tradingview_link
-)
-from technical_indicators import compute_technical_metrics
-from telegram_alerts import send_telegram_alert
-from duplicate_cache import seen_recent, mark_seen
+TIER1_FILE = os.getenv("TIER1_OUTPUT_FILE", "tier1_symbols.txt")
 
-def pct(a: float, b: float) -> float:
-    if b == 0 or a is None or b is None: return 0.0
-    return (a - b) / b * 100.0
-
-def _pump_filter(ohlcv: List[Dict], threshold_pct: float = 50.0) -> bool:
-    """Reject if any 60-min window has > threshold% rise."""
-    if not ohlcv or len(ohlcv) < 12:  # with 5-min candles
-        return False
-    # check last 12 bars (~1h)
-    first = ohlcv[-12]["c"]
-    last = ohlcv[-1]["c"]
-    return pct(last, first) > threshold_pct
-
-def _ai_score(features: Dict) -> (float, str, str):
-    """Lightweight deterministic scorer (0–10) + confidence + short narrative."""
+# Basic AI scoring heuristic (placeholder for actual model)
+def compute_ai_score(metrics: dict) -> (float, str):
+    """Return (score 0-10, short_reason). Deterministic heuristic: favors rvol>2, RSI between 50-70, EMA align."""
     score = 0.0
-    reason = []
-    # RSI sweet spot
-    if RSI_MIN <= features["rsi"] <= RSI_MAX:
-        score += 2.0; reason.append("RSI in accumulation zone")
-    # EMA stack
-    if features["ema5"] > features["ema13"] > features["ema50"]:
-        score += 2.0; reason.append("EMA5>EMA13>EMA50 trend")
-    # VWAP proximity
-    vwap_dev = abs(features["close"] - features["vwap"]) / features["vwap"] * 100 if features["vwap"] else 999
-    if vwap_dev <= VWAP_PROX_PCT:
-        score += 1.5; reason.append("Near VWAP")
+    reasons = []
+    rvol = metrics.get("rvol") or 0
+    rsi = metrics.get("rsi") or 0
+    ema5 = metrics.get("ema5")
+    ema13 = metrics.get("ema13")
+    ema50 = metrics.get("ema50")
+
     # RVOL
-    if features["rvol"] >= RVOL_MIN:
-        score += 2.0; reason.append("Elevated RVOL")
-    # Sentiment
-    if features["sentiment"] >= 0.6:
-        score += 1.5; reason.append("Positive social sentiment")
-    # Price change moderation (2–20 already enforced)
-    score += 1.0  # base prior for meeting Tier 1 filters
+    score += min(max((rvol - 1) * 3, 0), 4)  # up to 4 points
 
-    # Clip 0–10
-    score = max(0.0, min(10.0, score))
-    conf = "High" if score >= 7.5 else ("Medium" if score >= 5.0 else "Low")
-    narrative = " + ".join(reason) if reason else "Meets core momentum filters"
-    return score, conf, narrative
+    # RSI preference
+    if 50 <= rsi <= 70:
+        score += 2.0
+        reasons.append("RSI in bullish range")
+    elif rsi > 70:
+        score += 0.5
+        reasons.append("RSI high")
 
-def _risk_panel(close: float, atr: float) -> Dict:
-    """ATR-based SL/TP with simple 1R/2R."""
-    if not (close and atr and atr > 0):
-        return {"stop_loss": None, "take_profit": None, "position_size": "—"}
-    sl = close - 1.5 * atr
-    tp = close + 3.0 * atr
-    # Position sizing placeholder (1% risk of $10k account)
-    account = 10_000.0
-    risk_per_trade = 0.01 * account
-    per_unit_risk = close - sl if sl and close else None
-    qty = max(0, int(risk_per_trade / per_unit_risk)) if per_unit_risk and per_unit_risk > 0 else 0
-    return {"stop_loss": sl, "take_profit": tp, "position_size": qty}
+    # EMA alignment
+    if ema5 and ema13 and ema50:
+        if ema5 > ema13 > ema50:
+            score += 2.0
+            reasons.append("Bullish EMA alignment")
 
-def _passes_tier1(d: Dict) -> bool:
-    price = d.get("price") or 0
-    vol = d.get("volume_24h") or 0
-    mcap = d.get("market_cap") or 0
-    chg = d.get("percent_change_24h") or 0
-    return (
-        PRICE_MIN <= price <= PRICE_MAX and
-        vol >= VOL_MIN and
-        MCAP_MIN <= mcap <= MCAP_MAX and
-        CHANGE_MIN_PCT <= chg <= CHANGE_MAX_PCT
-    )
+    # Cap
+    score = min(score, 10.0)
+    reason_text = " + ".join(reasons) if reasons else "Metrics indicate cautious interest"
+    return round(score, 2), reason_text
 
-def _passes_tier2(symbol: str, ohlcv: List[Dict], tech: Dict, social: Dict) -> bool:
-    if not tech: return False
-    if _pump_filter(ohlcv, REJECT_PUMP_PCT): return False
-    if not (RSI_MIN <= tech["rsi"] <= RSI_MAX): return False
-    if not (tech["ema5"] > tech["ema13"] > tech["ema50"]): return False
-    # vwap proximity
-    if tech["vwap"] and abs(tech["close"] - tech["vwap"]) / tech["vwap"] * 100 > VWAP_PROX_PCT:
-        return False
-    if not (tech["rvol"] and tech["rvol"] >= RVOL_MIN): return False
-    if not (social.get("mentions", 0) >= SOCIAL_MENTIONS_MIN): return False
-    if not (social.get("engagement", 0) >= ENGAGEMENT_MIN): return False
-    if not (social.get("sentiment", 0.0) >= SENTIMENT_MIN): return False
-    return True
+def risk_panel(latest_close: float, atr: float):
+    sl = latest_close - 1.5 * (atr or 0)
+    tp = latest_close + 3 * (atr or 0)
+    position_size = None  # user-specific; placeholder
+    return {"entry": latest_close, "stop_loss": max(sl, 0), "take_profit": tp, "position_size": position_size}
 
-def run_auto_tier2() -> List[Dict]:
-    markets = get_market_list_cmc(limit=MAX_MARKETS_TO_SCAN)
-    shortlisted = [m for m in markets if _passes_tier1(m) and not seen_recent(m["symbol"])]
-    results: List[Dict] = []
+def symbols_from_tier1_file():
+    if os.path.exists(TIER1_FILE):
+        with open(TIER1_FILE, "r") as f:
+            lines = [l.strip() for l in f if l.strip()]
+            return lines
+    return []
 
-    for m in shortlisted:
-        sym = m["symbol"]
+def fallback_top_candidates(limit=50):
+    markets = get_top_markets(limit=limit)
+    return [m.get("id") for m in markets]
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    symbols = symbols_from_tier1_file()
+    if not symbols:
+        logging.info("No tier1 file found; attempting to pull candidates from Supabase or top markets.")
+        if supabase:
+            try:
+                res = supabase.table("signals").select("coin_id").limit(200).execute()
+                data = res.data if hasattr(res, "data") else res
+                symbols = [row.get("coin_id") for row in data if row.get("coin_id")]
+            except Exception:
+                logging.exception("Supabase query failed; falling back to top markets")
+                symbols = fallback_top_candidates(limit=50)
+        else:
+            symbols = fallback_top_candidates(limit=50)
+
+    logging.info("Tier2 running on %d symbols", len(symbols))
+
+    results = []
+    for coin_id in symbols:
         try:
-            ohlcv = get_ohlcv_polygon(sym, multiplier=5, timespan="minute", limit=MAX_TIER2_DEEP_CANDLES)
-            if not ohlcv: continue
-            tech = compute_technical_metrics(ohlcv)
-            social = get_social_lunarcrush(sym)
-            if not _passes_tier2(sym, ohlcv, tech, social):
+            df = get_ohlcv_coin_gecko(coin_id, days=7)
+            if df.empty:
+                logging.warning("No OHLCV for %s; skipping", coin_id)
                 continue
-
-            ai_score, ai_conf, ai_reason = _ai_score({
-                **tech,
-                "sentiment": social.get("sentiment", 0.0),
-            })
-            risk = _risk_panel(tech.get("close"), tech.get("atr"))
-
-            links = {
-                "tradingview": tradingview_link(sym),
-                "news": get_news_links(sym, max_items=2),
-                "reddit": [],  # can be filled later
-                "tweet": [],   # can be filled later
-                "catalyst": get_news_links(sym, max_items=1),
-            }
+            metrics = compute_metrics(df)
+            latest_close = float(df["close"].iloc[-1])
+            ai_score, ai_reason = compute_ai_score(metrics)
+            rp = risk_panel(latest_close, metrics.get("atr"))
 
             payload = {
-                "symbol": sym,
-                "name": m.get("name"),
-                "price": tech.get("close") or m.get("price"),
-                "change_pct": m.get("percent_change_24h"),
-                "rsi": tech.get("rsi"),
-                "ema5": tech.get("ema5"),
-                "ema13": tech.get("ema13"),
-                "ema50": tech.get("ema50"),
-                "vwap": tech.get("vwap"),
-                "atr": tech.get("atr"),
-                "rvol": tech.get("rvol"),
-                "volume": tech.get("volume"),
+                "ticker": coin_id,
+                "coin_id": coin_id,
+                "time": datetime.utcnow().isoformat(),
+                "price": latest_close,
+                "rsi": metrics.get("rsi"),
+                "ema5": metrics.get("ema5"),
+                "ema13": metrics.get("ema13"),
+                "ema50": metrics.get("ema50"),
+                "vwap": metrics.get("vwap"),
+                "atr": metrics.get("atr"),
+                "rvol": metrics.get("rvol"),
+                "volume": metrics.get("volume"),
                 "ai_score": ai_score,
-                "ai_confidence": ai_conf,
                 "ai_reason": ai_reason,
-                "risk": risk,
-                "sentiment": {
-                    "score": social.get("sentiment", 0.0),
-                    "mentions": social.get("mentions", 0),
-                    "engagement": social.get("engagement", 0),
-                    "influencer": social.get("influencer", False),
-                },
-                "links": links,
-                "quote": QUOTE_CCY,
+                "risk": rp,
+                "tier": "tier2"
             }
 
-            # Alert + mark seen
-            send_telegram_alert(payload)
-            mark_seen(sym)
+            # upsert to supabase for dashboard
+            try:
+                upsert_signal(payload, on_conflict="coin_id")
+            except Exception:
+                logging.exception("Failed to upsert to supabase for %s", coin_id)
+
             results.append(payload)
-
+            logging.info("Processed %s ai_score=%s rsi=%s rvol=%s", coin_id, ai_score, metrics.get("rsi"), metrics.get("rvol"))
         except Exception as e:
-            # Best-effort; continue scanning others
-            continue
+            logging.exception("Error processing %s: %s", coin_id, e)
 
-    return results
+    # Save local results for debugging/view (optional)
+    with open("tier2_results.json", "w") as f:
+        json.dump(results, f, indent=2, default=str)
+
+    print(f"Tier2 finished. Results: {len(results)}")
+    # Optionally: send Telegram alerts here (not included to keep this focused)
 
 if __name__ == "__main__":
-    out = run_auto_tier2()
-    # Print summary for GitHub Actions log (kept minimal)
-    print(f"Tier 2 candidates: {len(out)}")
-    for r in out:
-        print(f"- {r['symbol']} | AI {r['ai_score']:.1f} | RSI {r['rsi']:.1f} | RVOL {r['rvol']:.2f}")
+    main()
