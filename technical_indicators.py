@@ -1,84 +1,64 @@
-from typing import Dict, List
-import math
+# technical_indicators.py
+import pandas as pd
+import numpy as np
 
-def _sma(series: List[float], length: int) -> float:
-    if len(series) < length or length <= 0: return float("nan")
-    return sum(series[-length:]) / float(length)
-
-def _ema(series: List[float], length: int) -> float:
-    if len(series) < length or length <= 0: return float("nan")
-    k = 2 / (length + 1)
-    ema_val = series[0]
-    for price in series[1:]:
-        ema_val = price * k + ema_val * (1 - k)
-    return ema_val
-
-def _rsi(closes: List[float], length: int = 14) -> float:
-    if len(closes) < length + 1: return float("nan")
-    gains, losses = 0.0, 0.0
-    for i in range(-length, 0):
-        ch = closes[i] - closes[i - 1]
-        if ch > 0: gains += ch
-        else: losses += -ch
-    if losses == 0: return 100.0
-    rs = (gains / length) / (losses / length)
-    return 100 - (100 / (1 + rs))
-
-def _atr(highs: List[float], lows: List[float], closes: List[float], length: int = 14) -> float:
-    if len(closes) < length + 1: return float("nan")
-    trs = []
-    for i in range(1, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1]),
-        )
-        trs.append(tr)
-    # Use SMA of TR for simplicity
-    if len(trs) < length: return float("nan")
-    return sum(trs[-length:]) / float(length)
-
-def _vwap(ohlcv: List[Dict]) -> float:
-    pv_sum, vol_sum = 0.0, 0.0
-    for c in ohlcv:
-        # Typical price
-        tp = (c["h"] + c["l"] + c["c"]) / 3.0
-        v = c["v"] or 0.0
-        pv_sum += tp * v
-        vol_sum += v
-    return pv_sum / vol_sum if vol_sum > 0 else float("nan")
-
-def _rvol(volumes: List[float], lookback: int = 20) -> float:
-    if len(volumes) < lookback + 1: return float("nan")
-    recent = volumes[-1]
-    base = sum(volumes[-(lookback+1):-1]) / float(lookback)
-    return recent / base if base > 0 else float("nan")
-
-def compute_technical_metrics(ohlcv: List[Dict]) -> Dict:
-    """Return RSI, EMAs, VWAP, ATR, RVOL, last close & volume."""
-    if not ohlcv or len(ohlcv) < 30:
+def compute_metrics(df: pd.DataFrame) -> dict:
+    """
+    Input: df with columns ['close','high','low','volume'] indexed by timestamp.
+    Output: dictionary {rsi, ema5, ema13, ema50, vwap, atr, rvol, volume}
+    """
+    if df is None or df.empty:
         return {}
-    closes = [c["c"] for c in ohlcv]
-    highs = [c["h"] for c in ohlcv]
-    lows = [c["l"] for c in ohlcv]
-    vols = [c["v"] for c in ohlcv]
 
-    rsi = _rsi(closes, 14)
-    ema5 = _ema(closes, 5)
-    ema13 = _ema(closes, 13)
-    ema50 = _ema(closes, 50)
-    vwap = _vwap(ohlcv)
-    atr = _atr(highs, lows, closes, 14)
-    rvol = _rvol(vols, 20)
+    close = df["close"].astype(float)
+    high = df.get("high", close).astype(float)
+    low = df.get("low", close).astype(float)
+    volume = df.get("volume", pd.Series([0] * len(df), index=df.index)).astype(float)
 
-    return {
-        "rsi": rsi,
-        "ema5": ema5,
-        "ema13": ema13,
-        "ema50": ema50,
-        "vwap": vwap,
-        "atr": atr,
-        "rvol": rvol,
-        "close": closes[-1],
-        "volume": vols[-1],
+    # EMAs
+    def ema(series, span):
+        return series.ewm(span=span, adjust=False).mean()
+
+    ema5 = ema(close, 5).iloc[-1] if len(close) >= 1 else None
+    ema13 = ema(close, 13).iloc[-1] if len(close) >= 1 else None
+    ema50 = ema(close, 50).iloc[-1] if len(close) >= 1 else None
+
+    # RSI (14)
+    delta = close.diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    roll_up = up.ewm(alpha=1/14, adjust=False).mean()
+    roll_down = down.ewm(alpha=1/14, adjust=False).mean()
+    rs = roll_up / (roll_down + 1e-9)
+    rsi_series = 100 - (100 / (1 + rs))
+    rsi = rsi_series.iloc[-1] if not rsi_series.empty else None
+
+    # VWAP
+    typical_price = (high + low + close) / 3.0
+    cum_vol = volume.cumsum()
+    vwap_series = (typical_price * volume).cumsum() / (cum_vol + 1e-9)
+    vwap = vwap_series.iloc[-1] if not vwap_series.empty else None
+
+    # ATR (14)
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().iloc[-1] if len(tr) >= 14 else tr.mean()
+
+    # RVOL
+    avg_vol = volume.mean() if len(volume) > 0 else 0
+    recent_vol = volume.iloc[-14:].mean() if len(volume) >= 14 else volume.mean()
+    rvol = (recent_vol / (avg_vol + 1e-9)) if avg_vol > 0 else 0
+
+    metrics = {
+        "rsi": float(rsi) if rsi is not None and not pd.isna(rsi) else None,
+        "ema5": float(ema5) if ema5 is not None and not pd.isna(ema5) else None,
+        "ema13": float(ema13) if ema13 is not None and not pd.isna(ema13) else None,
+        "ema50": float(ema50) if ema50 is not None and not pd.isna(ema50) else None,
+        "vwap": float(vwap) if vwap is not None and not pd.isna(vwap) else None,
+        "atr": float(atr) if atr is not None and not pd.isna(atr) else None,
+        "rvol": float(rvol) if rvol is not None and not pd.isna(rvol) else None,
+        "volume": float(volume.iloc[-1]) if len(volume) > 0 else None,
     }
+    return metrics
