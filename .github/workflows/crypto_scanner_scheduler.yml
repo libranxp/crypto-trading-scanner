@@ -1,8 +1,27 @@
+name: Crypto Scanner Scheduler
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'  # runs every 15 minutes; change if needed
+
 jobs:
   scan:
     runs-on: ubuntu-latest
+    env:
+      # These should be set in GitHub Secrets — kept here so steps can access them
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+      COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}
+      # add other API keys you rely upon as secrets and here if needed
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -14,16 +33,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Tier 1 Scanner
-        run: python scanner_tier1.py
-        env:
-          # Add all your API keys here as GitHub secrets
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+      - name: Run Tier 1 scan (auto)
+        run: |
+          python scanner_tier1.py
+        # environment provided above
 
-      - name: Run Tier 2 Scanner
-        run: python scanner_tier2.py
-        env:
-          # Same API keys and environment variables
+      - name: Run Tier 2 (deep scan) — uses Tier 1 results if any
+        run: |
+          python scanner_tier2.py
