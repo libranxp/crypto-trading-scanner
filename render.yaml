@@ -3,6 +3,7 @@ services:
     name: crypto-dashboard
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: python dashboard.py
-    autoDeploy: true
