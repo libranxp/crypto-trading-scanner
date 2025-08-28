@@ -1,18 +1,7 @@
-# Web framework for dashboard
 Flask>=2.3
-
-# API calls
 requests>=2.31
-
-# Supabase client
 supabase>=1.0.0
-
-# Data analysis
 pandas>=2.0
-
-# Async / websocket support if needed
-websockets>=11.0
-
-# Any other packages used by your scanners
 numpy>=1.26
 python-dotenv>=1.1.0
+plotly>=5.18
